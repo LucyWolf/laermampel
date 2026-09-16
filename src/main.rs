@@ -6,6 +6,7 @@ mod audio;
 mod beep;
 mod level;
 mod settings;
+mod updater;
 
 use eframe::egui;
 
@@ -29,6 +30,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Lärmampel",
         options,
-        Box::new(|_cc| Ok(Box::new(app::LaermampelApp::new(settings)))),
+        Box::new(|cc| Ok(Box::new(app::LaermampelApp::new(settings, &cc.egui_ctx)))),
     )
 }

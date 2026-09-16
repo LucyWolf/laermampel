@@ -12,6 +12,9 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 ## Download
 
 Unter [Releases](../../releases) die `laermampel.exe` herunterladen und starten, keine Installation nötig.
+Updates: Das Programm sucht beim Start nach einer neuen Version. Ist eine da, erscheint ⬆ in der Ampel,
+und unter ⚙ → Version lässt sie sich mit einem Klick installieren.
+
 Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.json`.
 
 ## Bedienung
@@ -27,3 +30,12 @@ cargo build --release
 ```
 
 Unter Linux wird zusätzlich `libasound2-dev` (bzw. `alsa-lib`) benötigt.
+
+## Neue Version veröffentlichen
+
+1. `version` in `Cargo.toml` erhöhen (z.B. `0.1.0` → `0.1.1`)
+2. Committen und pushen
+3. Tag setzen: `git tag v0.1.1 && git push origin v0.1.1`
+
+GitHub Actions baut dann die `laermampel.exe` und legt das Release an.
+Der Tag muss zur Version in `Cargo.toml` passen, sonst bricht der Build ab.

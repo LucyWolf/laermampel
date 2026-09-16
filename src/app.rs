@@ -6,9 +6,10 @@ use crate::audio::{self, InputDevice, Meter};
 use crate::beep;
 use crate::level::{Calibration, Level, Zone};
 use crate::settings::{self, Settings};
+use crate::updater::{self, Status, Updater};
 
 pub const COMPACT_SIZE: Vec2 = Vec2::new(300.0, 56.0);
-const EXPANDED_SIZE: Vec2 = Vec2::new(300.0, 640.0);
+const EXPANDED_SIZE: Vec2 = Vec2::new(300.0, 720.0);
 
 /// Anzeigebereich des Balkens in dBFS.
 const BAR_MIN_DB: f32 = -60.0;
@@ -36,10 +37,11 @@ pub struct LaermampelApp {
 
     show_settings: bool,
     applied_on_top: bool,
+    updater: Updater,
 }
 
 impl LaermampelApp {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(settings: Settings, ctx: &egui::Context) -> Self {
         let applied_on_top = settings.always_on_top;
         let mut app = Self {
             saved: settings.clone(),
@@ -56,8 +58,10 @@ impl LaermampelApp {
             calibration_message: None,
             show_settings: false,
             applied_on_top,
+            updater: Updater::new(),
         };
         app.restart_meter();
+        app.updater.check(ctx);
         app
     }
 
@@ -119,7 +123,73 @@ impl LaermampelApp {
         }
     }
 
+    fn set_settings_open(&mut self, ctx: &egui::Context, open: bool) {
+        self.show_settings = open;
+        let size = if open { EXPANDED_SIZE } else { COMPACT_SIZE };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+    }
+
+    fn version_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Version");
+        ui.label(format!("Lärmampel v{}", updater::CURRENT_VERSION));
+        let ctx = ui.ctx().clone();
+        match self.updater.status() {
+            Status::Idle => {
+                if ui.button("Nach Updates suchen").clicked() {
+                    self.updater.check(&ctx);
+                }
+            }
+            Status::UpToDate => {
+                ui.label("Du hast die neueste Version.");
+                if ui.button("Nach Updates suchen").clicked() {
+                    self.updater.check(&ctx);
+                }
+            }
+            Status::Failed(e) => {
+                ui.colored_label(Color32::from_rgb(235, 90, 90), e);
+                if ui.button("Nochmal versuchen").clicked() {
+                    self.updater.check(&ctx);
+                }
+            }
+            Status::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Suche nach Updates …");
+                });
+            }
+            Status::Available(release) => {
+                ui.colored_label(Color32::from_rgb(90, 200, 120), format!("Neue Version v{} verfügbar", release.version));
+                ui.horizontal(|ui| {
+                    if release.installable() && ui.button("⬆ Update installieren").clicked() {
+                        self.updater.install(&ctx, release.clone());
+                    }
+                    ui.hyperlink_to("Was ist neu?", &release.page_url);
+                });
+            }
+            Status::Installing(release) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Lade v{} herunter …", release.version));
+                });
+            }
+            Status::Installed(release) => {
+                ui.label(format!("v{} ist installiert.", release.version));
+                if ui.button("Jetzt neu starten").clicked() {
+                    settings::save(&self.settings);
+                    self.saved = self.settings.clone();
+                    match updater::restart() {
+                        Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Err(e) => self.updater.fail(format!("Neustart fehlgeschlagen: {e}")),
+                    }
+                }
+            }
+        }
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        self.version_ui(ui);
+        ui.add_space(8.0);
+
         let s = &mut self.settings;
 
         ui.heading("Mikrofon");
@@ -286,23 +356,29 @@ impl eframe::App for LaermampelApp {
                 let inner = header.shrink2(Vec2::new(12.0, 10.0));
                 let meter_rect = Rect::from_min_max(
                     Pos2::new(inner.left(), inner.center().y - 7.0),
-                    Pos2::new(inner.right() - 56.0, inner.center().y + 7.0),
+                    Pos2::new(inner.right() - 82.0, inner.center().y + 7.0),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(meter_rect), |ui| self.draw_meter(ui));
 
-                let buttons = Rect::from_min_max(Pos2::new(inner.right() - 50.0, inner.top()), inner.max);
+                let buttons = Rect::from_min_max(Pos2::new(inner.right() - 76.0, inner.top()), inner.max);
                 let mut close = false;
+                let mut toggle_settings = false;
+                let mut open_settings = false;
+                let update_available = matches!(self.updater.status(), Status::Available(_) | Status::Installed(_));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(buttons), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         close = ui.small_button("✕").on_hover_text("Beenden").clicked();
                         let label = if self.show_settings { "▲" } else { "⚙" };
-                        if ui.small_button(label).on_hover_text("Einstellungen").clicked() {
-                            self.show_settings = !self.show_settings;
-                            let size = if self.show_settings { EXPANDED_SIZE } else { COMPACT_SIZE };
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                        toggle_settings = ui.small_button(label).on_hover_text("Einstellungen").clicked();
+                        if update_available && !self.show_settings {
+                            open_settings = ui.small_button("⬆").on_hover_text("Update verfügbar").clicked();
                         }
                     });
                 });
+                if toggle_settings || open_settings {
+                    let open = open_settings || !self.show_settings;
+                    self.set_settings_open(ui.ctx(), open);
+                }
                 if close {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
