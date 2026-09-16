@@ -23,6 +23,8 @@ const MONITOR_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 /// So oft wird die Anzeige wieder nach ganz vorne geholt, falls ein Spiel sie verdeckt hat.
 const REASSERT_INTERVAL: Duration = Duration::from_secs(1);
 
+const PREVIEW_DURATION: Duration = Duration::from_secs(3);
+
 const RED_TEXT: Color32 = Color32::from_rgb(235, 90, 90);
 
 pub fn zone_rgb(zone: Zone) -> [u8; 3] {
@@ -62,6 +64,7 @@ pub struct LaermampelApp {
 
     settings_open: bool,
     focus_settings: bool,
+    preview_until: Option<Instant>,
     autostart_enabled: bool,
     autostart_error: Option<String>,
 
@@ -93,6 +96,7 @@ impl LaermampelApp {
             // Ohne Symbol im Infobereich kämen wir sonst nie an die Einstellungen.
             settings_open: tray.is_none(),
             focus_settings: false,
+            preview_until: None,
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
             tray,
@@ -113,6 +117,15 @@ impl LaermampelApp {
                 self.meter_error = None;
             }
             Err(e) => self.meter_error = Some(e),
+        }
+    }
+
+    /// Angezeigte Farbe; während der Vorschau immer Rot.
+    fn shown_zone(&self) -> Zone {
+        if self.preview_until.is_some_and(|t| Instant::now() < t) {
+            Zone::Red
+        } else {
+            self.level.zone
         }
     }
 
@@ -196,7 +209,7 @@ impl LaermampelApp {
     fn draw_indicator(&self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         let painter = ui.painter();
-        let zone = self.level.zone;
+        let zone = self.shown_zone();
         let brightness = self.zone_brightness(zone);
         let tint = zone_color(zone).gamma_multiply(brightness);
 
@@ -341,6 +354,17 @@ impl LaermampelApp {
         ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
         ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
         ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("Vorschau: 3 s rot").on_hover_text("Zeigt, wo die Anzeige gerade sitzt").clicked() {
+                self.preview_until = Some(Instant::now() + PREVIEW_DURATION);
+            }
+            match self.applied_rect {
+                Some(r) => ui.weak(format!("Position {}, {} · {}×{} px", r.x, r.y, r.w, r.h)),
+                None => ui.colored_label(RED_TEXT, "Kein Monitor gefunden"),
+            };
+        });
     }
 
     fn microphone_ui(&mut self, ui: &mut egui::Ui) {
@@ -499,7 +523,7 @@ impl eframe::App for LaermampelApp {
         if self.instance.show_requested() {
             self.open_settings();
         }
-        let zone = self.level.zone;
+        let zone = self.shown_zone();
         if let Some(tray) = &mut self.tray {
             tray.set_zone(zone);
         }
