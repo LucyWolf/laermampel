@@ -10,6 +10,8 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/LucyWolf/laermampel/releases/latest";
 const ASSET_NAME: &str = "laermampel.exe";
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Startargument der neuen Version nach einem Update.
+pub const RESTART_ARG: &str = "--nach-update";
 
 #[derive(Clone)]
 pub struct Release {
@@ -170,6 +172,6 @@ fn download_and_replace(release: &Release) -> Result<(), String> {
 /// Startet die (inzwischen ersetzte) eigene .exe neu.
 pub fn restart() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::process::Command::new(exe).spawn().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe).arg(RESTART_ARG).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
