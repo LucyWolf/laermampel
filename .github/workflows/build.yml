@@ -28,6 +28,11 @@ jobs:
             echo "Tag $GITHUB_REF_NAME passt nicht zur Version $version in Cargo.toml"
             exit 1
           fi
+          patch=${version##*.}
+          if (( patch > 99 )); then
+            echo "Letzte Stelle darf höchstens 99 sein, danach mittlere Stelle erhöhen (z.B. 0.3.99 → 0.4.0)"
+            exit 1
+          fi
 
       - run: cargo test --release
       - run: cargo build --release
