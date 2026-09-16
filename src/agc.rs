@@ -1,4 +1,4 @@
-//! Mikrofon für andere Programme: Rauschfilter und automatische Lautstärke, ausgegeben
+//! Mikrofon für andere Programme: Noise Gate und automatische Lautstärke, ausgegeben
 //! auf ein virtuelles Audiogerät (VB-Cable), das andere Programme als Mikrofon benutzen.
 
 use std::sync::Arc;
@@ -6,15 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use nnnoiseless::DenoiseState;
 use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::audio::{Fault, InputDevice, describe};
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
-/// Der Rauschfilter (RNNoise) arbeitet fest mit 48 kHz, die ganze Kette deshalb auch.
-pub const CHAIN_RATE: u32 = 48_000;
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
 const VB_CABLE_HINT: &str = "cable input";
 
@@ -28,6 +25,9 @@ const MAX_DRIFT_CORRECTION: f64 = 0.005;
 const PARAM_RELOAD_SAMPLES: usize = 256;
 const LEVEL_WINDOW_MS: f32 = 50.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
+const GATE_LEVEL_WINDOW_MS: f32 = 10.0;
+/// So weit muss der Pegel unter die Schwelle fallen, bevor das Gate zu zählen beginnt.
+const GATE_HYSTERESIS_DB: f32 = 3.0;
 /// Liegt der Pegel so weit unter dem letzten Höchstwert, klingt gerade ein Wort aus.
 const TAIL_DB: f32 = 10.0;
 const PEAK_DECAY_DB_PER_SECOND: f32 = 10.0;
@@ -49,7 +49,17 @@ impl AtomicF32 {
 /// Einstellungen, die live aus der Oberfläche übernommen werden.
 #[derive(Default)]
 pub struct AgcParams {
-    pub denoise_enabled: AtomicBool,
+    pub gate_enabled: AtomicBool,
+    pub gate_threshold_db: AtomicF32,
+    /// Wie viel leiser im geschlossenen Zustand.
+    pub gate_range_db: AtomicF32,
+    pub gate_attack_ms: AtomicF32,
+    pub gate_hold_ms: AtomicF32,
+    pub gate_release_ms: AtomicF32,
+    /// Rückmeldung an die Oberfläche.
+    pub gate_level_db: AtomicF32,
+    pub gate_open: AtomicBool,
+
     pub agc_enabled: AtomicBool,
     pub target_db: AtomicF32,
     pub max_gain_db: AtomicF32,
@@ -76,101 +86,110 @@ pub fn list_output_devices() -> Vec<InputDevice> {
         .collect()
 }
 
-/// Mikrofon → (48 kHz) → Rauschfilter → automatische Lautstärke → Puffer zur Ausgabe.
+/// Mikrofon → Noise Gate → automatische Lautstärke → Puffer zur Ausgabe.
 pub struct VoiceChain {
-    upsampler: Option<LinearResampler>,
-    scratch: Vec<f32>,
-    frame: Vec<f32>,
-    scaled: Vec<f32>,
-    cleaned: Vec<f32>,
-    denoise: Box<DenoiseState<'static>>,
+    gate: Gate,
     agc: Agc,
     params: Arc<AgcParams>,
     output: HeapProd<f32>,
 }
 
 impl VoiceChain {
-    pub fn new(input_rate: u32, params: Arc<AgcParams>, output: HeapProd<f32>) -> Self {
-        let upsampler = (input_rate != CHAIN_RATE).then(|| LinearResampler::new(input_rate as f64 / CHAIN_RATE as f64));
+    pub fn new(sample_rate: u32, params: Arc<AgcParams>, output: HeapProd<f32>) -> Self {
         Self {
-            upsampler,
-            scratch: Vec::with_capacity(8),
-            frame: Vec::with_capacity(DenoiseState::FRAME_SIZE),
-            scaled: vec![0.0; DenoiseState::FRAME_SIZE],
-            cleaned: vec![0.0; DenoiseState::FRAME_SIZE],
-            denoise: DenoiseState::new(),
-            agc: Agc::new(CHAIN_RATE as f32, Arc::clone(&params)),
+            gate: Gate::new(sample_rate as f32, Arc::clone(&params)),
+            agc: Agc::new(sample_rate as f32, Arc::clone(&params)),
             params,
             output,
         }
     }
 
     pub fn push(&mut self, x: f32) {
-        match &mut self.upsampler {
-            None => self.push_48k(x),
-            Some(upsampler) => {
-                upsampler.feed(x, &mut self.scratch);
-                for i in 0..self.scratch.len() {
-                    let y = self.scratch[i];
-                    self.push_48k(y);
-                }
-                self.scratch.clear();
-            }
+        let mut y = x;
+        if self.params.gate_enabled.load(Ordering::Relaxed) {
+            y = self.gate.process(y);
         }
-    }
-
-    fn push_48k(&mut self, x: f32) {
-        self.frame.push(x);
-        if self.frame.len() == DenoiseState::FRAME_SIZE {
-            self.process_frame();
-            self.frame.clear();
-        }
-    }
-
-    fn process_frame(&mut self) {
-        if self.params.denoise_enabled.load(Ordering::Relaxed) {
-            // RNNoise erwartet Werte im 16-Bit-Bereich.
-            for (s, &x) in self.scaled.iter_mut().zip(&self.frame) {
-                *s = x * 32768.0;
-            }
-            self.denoise.process_frame(&mut self.cleaned, &self.scaled);
-            for v in &mut self.cleaned {
-                *v /= 32768.0;
-            }
-        } else {
-            self.cleaned.copy_from_slice(&self.frame);
-        }
-
-        let agc_on = self.params.agc_enabled.load(Ordering::Relaxed);
-        for &v in &self.cleaned {
-            let y = if agc_on { self.agc.process(v) } else { v.clamp(-1.0, 1.0) };
-            // Ist der Puffer voll, hängt die Ausgabe; dann lieber verwerfen als blockieren.
-            let _ = self.output.try_push(y);
-        }
+        y = if self.params.agc_enabled.load(Ordering::Relaxed) { self.agc.process(y) } else { y.clamp(-1.0, 1.0) };
+        // Ist der Puffer voll, hängt die Ausgabe; dann lieber verwerfen als blockieren.
+        let _ = self.output.try_push(y);
     }
 }
 
-/// Lineare Umrechnung auf 48 kHz, reicht für Sprache.
-struct LinearResampler {
-    step: f64,
-    pos: f64,
-    previous: f32,
-    current: f32,
+/// Unter der Schwelle wird das Mikrofon abgesenkt, darüber geht es auf.
+pub struct Gate {
+    sample_rate: f32,
+    params: Arc<AgcParams>,
+    countdown: usize,
+
+    level_k: f32,
+    attack_k: f32,
+    release_k: f32,
+    threshold_db: f32,
+    closed_gain: f32,
+    hold_samples: usize,
+
+    power: f32,
+    gain: f32,
+    open: bool,
+    hold_left: usize,
 }
 
-impl LinearResampler {
-    fn new(step: f64) -> Self {
-        Self { step, pos: 0.0, previous: 0.0, current: 0.0 }
+impl Gate {
+    pub fn new(sample_rate: f32, params: Arc<AgcParams>) -> Self {
+        Self {
+            sample_rate,
+            params,
+            countdown: 0,
+            level_k: smoothing(GATE_LEVEL_WINDOW_MS, sample_rate),
+            attack_k: 1.0,
+            release_k: 1.0,
+            threshold_db: 0.0,
+            closed_gain: 0.0,
+            hold_samples: 0,
+            power: 0.0,
+            gain: 0.0,
+            open: false,
+            hold_left: 0,
+        }
     }
 
-    fn feed(&mut self, x: f32, out: &mut Vec<f32>) {
-        self.previous = self.current;
-        self.current = x;
-        while self.pos < 1.0 {
-            out.push(self.previous + (self.current - self.previous) * self.pos as f32);
-            self.pos += self.step;
+    fn reload(&mut self, level_db: f32) {
+        let p = &self.params;
+        self.attack_k = smoothing(p.gate_attack_ms.get(), self.sample_rate);
+        self.release_k = smoothing(p.gate_release_ms.get(), self.sample_rate);
+        self.threshold_db = p.gate_threshold_db.get();
+        self.closed_gain = db_to_gain(-p.gate_range_db.get().max(0.0));
+        self.hold_samples = (p.gate_hold_ms.get().max(0.0) / 1000.0 * self.sample_rate) as usize;
+        p.gate_level_db.set(level_db);
+        p.gate_open.store(self.open, Ordering::Relaxed);
+    }
+
+    pub fn process(&mut self, x: f32) -> f32 {
+        self.power += (x * x - self.power) * self.level_k;
+        let level_db = 10.0 * self.power.max(1e-12).log10();
+
+        if self.countdown == 0 {
+            self.reload(level_db);
+            self.countdown = PARAM_RELOAD_SAMPLES;
         }
-        self.pos -= 1.0;
+        self.countdown -= 1;
+
+        if level_db > self.threshold_db {
+            self.open = true;
+            self.hold_left = self.hold_samples;
+        } else if self.open && level_db < self.threshold_db - GATE_HYSTERESIS_DB {
+            // Knapp unter der Schwelle nicht zählen, sonst flattert es am Wortende.
+            if self.hold_left > 0 {
+                self.hold_left -= 1;
+            } else {
+                self.open = false;
+            }
+        }
+
+        let target = if self.open { 1.0 } else { self.closed_gain };
+        let k = if target > self.gain { self.attack_k } else { self.release_k };
+        self.gain += (target - self.gain) * k;
+        x * self.gain
     }
 }
 
@@ -500,13 +519,21 @@ mod tests {
         }
     }
 
-    fn chain_with(input_rate: u32, denoise: bool) -> (VoiceChain, HeapCons<f32>) {
-        use ringbuf::traits::Split;
+    fn gate_params() -> Arc<AgcParams> {
         let p = params();
-        p.denoise_enabled.store(denoise, Ordering::Relaxed);
+        p.gate_enabled.store(true, Ordering::Relaxed);
         p.agc_enabled.store(false, Ordering::Relaxed);
-        let (producer, consumer) = ringbuf::HeapRb::<f32>::new(CHAIN_RATE as usize * 4).split();
-        (VoiceChain::new(input_rate, p, producer), consumer)
+        p.gate_threshold_db.set(-40.0);
+        p.gate_range_db.set(40.0);
+        p.gate_attack_ms.set(2.0);
+        p.gate_hold_ms.set(200.0);
+        p.gate_release_ms.set(50.0);
+        p
+    }
+
+    fn sine(n: usize, rms_db: f32) -> Vec<f32> {
+        let amplitude = db_to_gain(rms_db) * std::f32::consts::SQRT_2;
+        (0..n).map(|i| amplitude * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / RATE).sin()).collect()
     }
 
     fn rms_db(samples: &[f32]) -> f32 {
@@ -514,51 +541,55 @@ mod tests {
         10.0 * power.log10() as f32
     }
 
-    /// Gleichmäßiges Rauschen, reproduzierbar ohne Zufallsbibliothek.
-    fn noise(n: usize, level: f32) -> Vec<f32> {
-        let mut state = 0x1234_5678u32;
-        (0..n)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level
-            })
-            .collect()
+    fn through_gate(gate: &mut Gate, input: &[f32]) -> Vec<f32> {
+        input.iter().map(|&x| gate.process(x)).collect()
     }
 
     #[test]
-    fn rauschfilter_entfernt_rauschen() {
-        let input = noise(CHAIN_RATE as usize * 3, 0.05);
-        let (mut chain, mut consumer) = chain_with(CHAIN_RATE, true);
+    fn gate_senkt_leises_ab() {
+        let mut gate = Gate::new(RATE, gate_params());
+        let input = sine(RATE as usize, -55.0);
+        let output = through_gate(&mut gate, &input);
+        let tail = RATE as usize / 2;
+        let reduction = rms_db(&input[tail..]) - rms_db(&output[tail..]);
+        assert!((reduction - 40.0).abs() < 1.0, "{reduction:.1} dB abgesenkt");
+    }
+
+    #[test]
+    fn gate_laesst_sprache_durch() {
+        let mut gate = Gate::new(RATE, gate_params());
+        let input = sine(RATE as usize, -20.0);
+        let output = through_gate(&mut gate, &input);
+        let tail = RATE as usize / 2;
+        let difference = rms_db(&input[tail..]) - rms_db(&output[tail..]);
+        assert!(difference.abs() < 0.1, "{difference:.2} dB Unterschied");
+    }
+
+    #[test]
+    fn gate_haelt_nach_wortende() {
+        let mut gate = Gate::new(RATE, gate_params());
+        through_gate(&mut gate, &sine(RATE as usize, -20.0));
+        // 100 ms nach dem Wort: noch offen (Halten 200 ms). 500 ms danach: zu.
+        through_gate(&mut gate, &sine(RATE as usize / 10, -60.0));
+        assert!(gate.open, "schon nach 100 ms zu");
+        through_gate(&mut gate, &sine(RATE as usize * 4 / 10, -60.0));
+        assert!(!gate.open, "nach 500 ms noch offen");
+    }
+
+    #[test]
+    fn ausgeschaltet_bleibt_signal_gleich() {
+        use ringbuf::traits::Split;
+        let p = params();
+        p.gate_enabled.store(false, Ordering::Relaxed);
+        p.agc_enabled.store(false, Ordering::Relaxed);
+        let (producer, mut consumer) = ringbuf::HeapRb::<f32>::new(RATE as usize).split();
+        let mut chain = VoiceChain::new(RATE as u32, p, producer);
+        let input = sine(RATE as usize / 2, -20.0);
         for &x in &input {
             chain.push(x);
         }
         let output: Vec<f32> = consumer.pop_iter().collect();
-        let last = CHAIN_RATE as usize;
-        let reduction = rms_db(&input[input.len() - last..]) - rms_db(&output[output.len() - last..]);
-        assert!(reduction > 10.0, "nur {reduction:.1} dB leiser");
-    }
-
-    #[test]
-    fn ohne_rauschfilter_bleibt_signal_gleich() {
-        let input = noise(CHAIN_RATE as usize, 0.05);
-        let (mut chain, mut consumer) = chain_with(CHAIN_RATE, false);
-        for &x in &input {
-            chain.push(x);
-        }
-        let output: Vec<f32> = consumer.pop_iter().collect();
-        assert_eq!(output.len(), input.len());
-        assert_eq!(output[..], input[..]);
-    }
-
-    #[test]
-    fn andere_abtastrate_wird_auf_48k_gebracht() {
-        let (mut chain, mut consumer) = chain_with(44_100, false);
-        for i in 0..44_100 {
-            chain.push((i as f32 * 0.01).sin() * 0.5);
-        }
-        let count = consumer.pop_iter().count();
-        // Eine Sekunde rein ergibt eine Sekunde raus, bis auf einen angefangenen 10-ms-Block.
-        assert!((47_500..=48_000).contains(&count), "{count} Samples");
+        assert_eq!(output, input);
     }
 
     #[test]
