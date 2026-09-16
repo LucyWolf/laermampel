@@ -41,6 +41,21 @@ pub struct Settings {
 
     pub beep_enabled: bool,
     pub beep_volume: f32,
+
+    /// Automatische Lautstärke über VB-Cable.
+    pub agc_enabled: bool,
+    pub agc_output_id: Option<String>,
+    /// Ziel-Sprachpegel in dBFS (RMS).
+    pub agc_target_db: f32,
+    pub agc_max_gain_db: f32,
+    pub agc_max_cut_db: f32,
+    /// Wie schnell runtergeregelt wird.
+    pub agc_attack_ms: f32,
+    /// Wie schnell hochgeregelt wird.
+    pub agc_release_ms: f32,
+    /// Darunter gilt es als Pause, die Verstärkung wird gehalten.
+    pub agc_gate_db: f32,
+    pub agc_ceiling_db: f32,
 }
 
 impl Default for Settings {
@@ -64,6 +79,15 @@ impl Default for Settings {
             bar_width: 240.0,
             beep_enabled: false,
             beep_volume: 0.3,
+            agc_enabled: false,
+            agc_output_id: None,
+            agc_target_db: -20.0,
+            agc_max_gain_db: 18.0,
+            agc_max_cut_db: 18.0,
+            agc_attack_ms: 40.0,
+            agc_release_ms: 1500.0,
+            agc_gate_db: -50.0,
+            agc_ceiling_db: -1.0,
         }
     }
 }

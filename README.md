@@ -11,6 +11,7 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 - Symbol im Infobereich neben der Uhr, zeigt ebenfalls die Ampelfarbe
 - Liest das Mikrofon parallel zu Discord und Co., nimmt nichts weg
 - Updates mit einem Klick
+- Automatische Lautstärke für alle Programme: leise Sprache wird angehoben, laute abgesenkt (über VB-Cable)
 
 ## Installation
 
@@ -29,6 +30,15 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 - **Beenden:** Rechtsklick auf das Symbol → Beenden.
 - **Updates:** Das Programm sucht beim Start nach einer neuen Version. Unter Einstellungen → Version lässt sie sich installieren.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
+
+### Automatische Lautstärke
+
+1. [VB-Cable](https://vb-audio.com/Cable/) installieren (kostenlos, braucht Adminrechte und einen Neustart).
+2. In der Lärmampel unter Einstellungen → Automatische Lautstärke einschalten. VB-Cable wird von selbst gefunden.
+3. In Discord, Spielen, OBS usw. als Mikrofon **„CABLE Output“** auswählen.
+
+Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
+Die Ampel misst weiterhin vor der Regelung, zeigt also, wie laut du wirklich sprichst.
 
 Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.json`.
 

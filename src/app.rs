@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2, ViewportCommand, ViewportId};
 
-use crate::audio::{self, InputDevice, Meter};
+use crate::agc::{self, AgcParams};
+use crate::audio::{self, AgcSetup, InputDevice, Meter};
 use crate::autostart;
 use crate::beep;
 use crate::instance;
@@ -49,6 +51,8 @@ pub struct LaermampelApp {
     meter_error: Option<String>,
     last_retry: Instant,
     devices: Vec<InputDevice>,
+    output_devices: Vec<InputDevice>,
+    agc_params: Arc<AgcParams>,
 
     level: Level,
     last_tick: Instant,
@@ -84,6 +88,8 @@ impl LaermampelApp {
             meter_error: None,
             last_retry: Instant::now(),
             devices: audio::list_input_devices(),
+            output_devices: agc::list_output_devices(),
+            agc_params: Arc::new(AgcParams::default()),
             level: Level::new(),
             last_tick: Instant::now(),
             red_count: 0,
@@ -103,6 +109,7 @@ impl LaermampelApp {
             instance,
             updater: Updater::new(),
         };
+        app.sync_agc_params();
         app.restart_meter();
         app.updater.check(ctx);
         app
@@ -111,13 +118,28 @@ impl LaermampelApp {
     fn restart_meter(&mut self) {
         self.meter = None;
         self.last_retry = Instant::now();
-        match Meter::start(self.settings.device_id.as_deref()) {
+        let agc_setup = self.settings.agc_enabled.then(|| AgcSetup {
+            output_id: self.settings.agc_output_id.clone(),
+            params: Arc::clone(&self.agc_params),
+        });
+        match Meter::start(self.settings.device_id.as_deref(), agc_setup) {
             Ok(m) => {
                 self.meter = Some(m);
                 self.meter_error = None;
             }
             Err(e) => self.meter_error = Some(e),
         }
+    }
+
+    fn sync_agc_params(&self) {
+        let (s, p) = (&self.settings, &self.agc_params);
+        p.target_db.set(s.agc_target_db);
+        p.max_gain_db.set(s.agc_max_gain_db);
+        p.max_cut_db.set(s.agc_max_cut_db);
+        p.attack_ms.set(s.agc_attack_ms);
+        p.release_ms.set(s.agc_release_ms);
+        p.gate_db.set(s.agc_gate_db);
+        p.ceiling_db.set(s.agc_ceiling_db);
     }
 
     /// Angezeigte Farbe; während der Vorschau immer Rot.
@@ -147,6 +169,7 @@ impl LaermampelApp {
         self.settings_open = true;
         self.focus_settings = true;
         self.devices = audio::list_input_devices();
+        self.output_devices = agc::list_output_devices();
         self.monitors = placement::monitors();
     }
 
@@ -413,6 +436,64 @@ impl LaermampelApp {
         ui.label(format!("Aktuell: {:.1} dB", self.level.display_db));
     }
 
+    fn agc_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Automatische Lautstärke");
+        ui.label("Hebt leise Sprache an und regelt laute runter, für alle Programme. Braucht VB-Cable.");
+
+        let mut restart = false;
+        restart |= ui.checkbox(&mut self.settings.agc_enabled, "Mikrofon automatisch angleichen").changed();
+
+        if self.settings.agc_enabled {
+            let active = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
+            let error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
+
+            ui.horizontal(|ui| {
+                ui.label("Ausgabe");
+                let selected = active.clone().unwrap_or_else(|| "–".to_string());
+                egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(240.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(self.settings.agc_output_id.is_none(), "VB-Cable automatisch").clicked() {
+                        self.settings.agc_output_id = None;
+                        restart = true;
+                    }
+                    for d in &self.output_devices {
+                        let chosen = self.settings.agc_output_id.as_deref() == Some(d.id.as_str());
+                        if ui.selectable_label(chosen, &d.name).clicked() {
+                            self.settings.agc_output_id = Some(d.id.clone());
+                            restart = true;
+                        }
+                    }
+                });
+                if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
+                    self.output_devices = agc::list_output_devices();
+                    restart = true;
+                }
+            });
+
+            if let Some(err) = error {
+                ui.colored_label(RED_TEXT, err);
+                ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
+            } else if active.is_some() {
+                ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
+                let gain = self.agc_params.current_gain_db.get();
+                ui.label(format!("Aktuelle Anpassung: {gain:+.1} dB"));
+            }
+
+            let s = &mut self.settings;
+            ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
+            ui.add(egui::Slider::new(&mut s.agc_max_gain_db, 0.0..=30.0).text("Höchstens lauter").suffix(" dB"));
+            ui.add(egui::Slider::new(&mut s.agc_max_cut_db, 0.0..=30.0).text("Höchstens leiser").suffix(" dB"));
+            ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
+            ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text("Hochregeln").suffix(" ms"));
+            ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
+                .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
+            ui.add(egui::Slider::new(&mut s.agc_ceiling_db, -12.0..=0.0).text("Limiter bei").suffix(" dB"));
+        }
+
+        if restart {
+            self.restart_meter();
+        }
+    }
+
     fn calibration_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Einlernen");
         ui.label("Rede ein paar Sekunden in normaler Lautstärke. Gelb und Rot werden dann relativ dazu gesetzt.");
@@ -436,6 +517,8 @@ impl LaermampelApp {
         self.display_ui(ui);
         ui.separator();
         self.microphone_ui(ui);
+        ui.separator();
+        self.agc_ui(ui);
         ui.separator();
         self.calibration_ui(ui);
         ui.separator();
@@ -523,6 +606,8 @@ impl eframe::App for LaermampelApp {
                 Err(e) => self.calibration_message = Some(e.to_string()),
             }
         }
+
+        self.sync_agc_params();
 
         let actions = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
         for action in actions {
