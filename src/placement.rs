@@ -90,7 +90,8 @@ mod win {
     use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HWND_TOPMOST, MONITORINFOF_PRIMARY, SWP_NOACTIVATE, SetWindowPos,
+        GWL_EXSTYLE, GetWindowLongPtrW, HWND_TOPMOST, LWA_ALPHA, MONITORINFOF_PRIMARY, SWP_NOACTIVATE,
+        SetLayeredWindowAttributes, SetWindowPos, WS_EX_LAYERED,
     };
     use windows_sys::core::BOOL;
 
@@ -135,6 +136,11 @@ mod win {
         let RawWindowHandle::Win32(win) = handle.as_raw() else { return };
         let hwnd = win.hwnd.get() as windows_sys::Win32::Foundation::HWND;
         unsafe {
+            // Für durchklickbare Fenster setzt winit WS_EX_LAYERED, aber keine Deckkraft.
+            // Ein solches Fenster zeichnet Windows überhaupt nicht, also volle Deckkraft setzen.
+            if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYERED != 0 {
+                SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            }
             SetWindowPos(hwnd, HWND_TOPMOST, rect.x, rect.y, rect.w, rect.h, SWP_NOACTIVATE);
         }
     }
