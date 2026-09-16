@@ -26,6 +26,7 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=Lärmampel
 UninstallDisplayIcon={app}\laermampel.exe
+SetupIconFile=..\assets\icon.ico
 CloseApplications=force
 RestartApplications=no
 
@@ -33,7 +34,11 @@ RestartApplications=no
 Name: "de"; MessagesFile: "compiler:Languages\German.isl"
 
 [Tasks]
+Name: "desktopicon"; Description: "Verknüpfung auf dem Desktop"
 Name: "autostart"; Description: "Mit Windows starten"
+
+[Icons]
+Name: "{autodesktop}\Lärmampel"; Filename: "{app}\laermampel.exe"; Tasks: desktopicon
 
 [Files]
 Source: "..\target\release\laermampel.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -44,6 +49,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\laermampel.exe"; Description: "Lärmampel jetzt starten"; Flags: nowait postinstall skipifsilent
+; Beim Update aus dem Programm läuft der Installer ohne Rückfragen und startet danach selbst neu.
+Filename: "{app}\laermampel.exe"; Parameters: "--nach-update"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM laermampel.exe"; Flags: runhidden; RunOnceId: "LaermampelBeenden"

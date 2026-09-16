@@ -17,7 +17,7 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 
 Unter [Releases](../../releases) die neueste `Laermampel-Setup-x.y.z.exe` herunterladen und ausführen.
 Adminrechte sind nicht nötig, installiert wird nach `%LOCALAPPDATA%\Programs\Laermampel`.
-Beim Installieren lässt sich „Mit Windows starten“ ankreuzen, das geht später auch in den Einstellungen.
+Beim Installieren lassen sich eine Desktop-Verknüpfung und „Mit Windows starten“ ankreuzen (Autostart geht später auch in den Einstellungen).
 
 Weil die Datei nicht signiert ist, warnt Windows beim ersten Mal: „Weitere Informationen“ → „Trotzdem ausführen“.
 
@@ -28,7 +28,8 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 - **Einstellungen:** Klick auf das Ampel-Symbol im Infobereich (neben der Uhr) oder Rechtsklick → Einstellungen.
   Die Lärmampel nochmal starten öffnet ebenfalls die Einstellungen.
 - **Beenden:** Rechtsklick auf das Symbol → Beenden.
-- **Updates:** Das Programm sucht beim Start nach einer neuen Version. Unter Einstellungen → Version lässt sie sich installieren.
+- **Updates:** Das Programm sucht beim Start nach einer neuen Version. Unter Einstellungen → Version auf „Update installieren“ klicken:
+  der Installer läuft ohne Rückfragen durch und startet die Lärmampel danach neu.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
 
 ### Automatische Lautstärke
@@ -47,6 +48,8 @@ Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.js
 ```
 cargo build --release
 ```
+
+Das Icon erzeugt `scripts/make_icon.py` (schreibt nach `assets/`).
 
 Der Installer wird mit [Inno Setup 6](https://jrsoftware.org/isinfo.php) gebaut:
 `iscc /DAppVersion=0.2.0 installer\laermampel.iss`

@@ -19,7 +19,6 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     // Nach einem Update wartet die neue Version, bis die alte beendet ist.
-    updater::remember_exe_path();
     let after_update = std::env::args().any(|a| a == updater::RESTART_ARG);
     let wait = if after_update { Duration::from_secs(30) } else { Duration::ZERO };
     let Some(instance) = instance::acquire(wait) else {
@@ -30,6 +29,7 @@ fn main() -> eframe::Result {
 
     let viewport = egui::ViewportBuilder::default()
         .with_title("Lärmampel")
+        .with_icon(app::app_icon())
         .with_inner_size([settings.dot_size, settings.dot_size])
         .with_decorations(false)
         .with_transparent(true)
