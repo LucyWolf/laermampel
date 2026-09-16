@@ -5,6 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use ringbuf::traits::{Producer, Split};
+use ringbuf::{HeapProd, HeapRb};
+
+use crate::agc::{self, Agc, AgcParams};
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
 const BLOCK_SECONDS: f32 = 0.02;
@@ -42,16 +46,25 @@ struct Shared {
     fresh: bool,
 }
 
+/// Automatische Lautstärke einschalten: wohin ausgeben und mit welchen Werten.
+pub struct AgcSetup {
+    pub output_id: Option<String>,
+    pub params: Arc<AgcParams>,
+}
+
 pub struct Meter {
     _stream: cpal::Stream,
+    _output: Option<cpal::Stream>,
     shared: Arc<Mutex<Shared>>,
     failed: Arc<AtomicBool>,
     pub device_name: String,
+    pub agc_output_name: Option<String>,
+    pub agc_error: Option<String>,
 }
 
 impl Meter {
     /// Startet die Aufnahme. Ist `device_id` unbekannt, wird das Standardmikrofon genommen.
-    pub fn start(device_id: Option<&str>) -> Result<Meter, String> {
+    pub fn start(device_id: Option<&str>, agc_setup: Option<AgcSetup>) -> Result<Meter, String> {
         let host = cpal::default_host();
         let device = device_id
             .and_then(|s| s.parse::<cpal::DeviceId>().ok())
@@ -71,19 +84,45 @@ impl Meter {
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
         let failed = Arc::new(AtomicBool::new(false));
 
+        // Erst die Ausgabe öffnen: klappt das nicht, läuft die Ampel trotzdem weiter.
+        let input_rate = config.sample_rate();
+        let mut output = None;
+        let mut agc_output_name = None;
+        let mut agc_error = None;
+        let mut chain = None;
+        if let Some(setup) = agc_setup {
+            let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
+            match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&failed)) {
+                Ok((stream, name)) => {
+                    output = Some(stream);
+                    agc_output_name = Some(name);
+                    chain = Some((Agc::new(input_rate as f32, setup.params), producer));
+                }
+                Err(e) => agc_error = Some(e),
+            }
+        }
+
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &failed),
-            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &failed),
-            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &failed),
-            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &failed),
-            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &failed),
+            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &failed, chain),
+            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &failed, chain),
+            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &failed, chain),
+            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &failed, chain),
+            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &failed, chain),
             other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
         }?;
         stream
             .play()
             .map_err(|e| format!("Aufnahme lässt sich nicht starten: {e}"))?;
 
-        Ok(Meter { _stream: stream, shared, failed, device_name })
+        Ok(Meter {
+            _stream: stream,
+            _output: output,
+            shared,
+            failed,
+            device_name,
+            agc_output_name,
+            agc_error,
+        })
     }
 
     /// Lauteste Blockmessung seit dem letzten Aufruf, `None` wenn keine neuen Daten da sind.
@@ -108,6 +147,7 @@ fn build<T>(
     config: &cpal::SupportedStreamConfig,
     shared: &Arc<Mutex<Shared>>,
     failed: &Arc<AtomicBool>,
+    chain: Option<(Agc, HeapProd<f32>)>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample + Send + 'static,
@@ -115,7 +155,7 @@ where
 {
     let sample_rate = config.sample_rate() as f32;
     let channels = config.channels().max(1) as usize;
-    let mut proc = Processor::new(sample_rate, Arc::clone(shared));
+    let mut proc = Processor::new(sample_rate, Arc::clone(shared), chain);
     let failed = Arc::clone(failed);
 
     device
@@ -142,10 +182,12 @@ struct Processor {
     /// Wert, der noch nicht abgegeben werden konnte, weil der Mutex gerade belegt war.
     pending_db: f32,
     shared: Arc<Mutex<Shared>>,
+    /// Automatische Lautstärke und der Puffer zur Ausgabe, falls eingeschaltet.
+    agc: Option<(Agc, HeapProd<f32>)>,
 }
 
 impl Processor {
-    fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>) -> Self {
+    fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>, agc: Option<(Agc, HeapProd<f32>)>) -> Self {
         Self {
             highpass: Biquad::highpass(sample_rate, HIGHPASS_HZ),
             lowpass: Biquad::lowpass(sample_rate, LOWPASS_HZ.min(sample_rate * 0.45)),
@@ -154,10 +196,16 @@ impl Processor {
             block_len: ((sample_rate * BLOCK_SECONDS) as usize).max(1),
             pending_db: SILENCE_DB,
             shared,
+            agc,
         }
     }
 
     fn push(&mut self, x: f32) {
+        if let Some((agc, output)) = &mut self.agc {
+            // Ist der Puffer voll, hängt die Ausgabe; dann lieber verwerfen als blockieren.
+            let _ = output.try_push(agc.process(x));
+        }
+
         let y = self.lowpass.run(self.highpass.run(x));
         self.sum_sq += (y * y) as f64;
         self.count += 1;

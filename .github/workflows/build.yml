@@ -29,6 +29,7 @@ jobs:
             exit 1
           fi
 
+      - run: cargo test --release
       - run: cargo build --release
 
       - name: Installer bauen

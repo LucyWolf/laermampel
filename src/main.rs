@@ -1,6 +1,7 @@
 // Unter Windows im Release kein Konsolenfenster öffnen.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agc;
 mod app;
 mod audio;
 mod autostart;
