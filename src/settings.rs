@@ -2,6 +2,14 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::placement::Anchor;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum DisplayMode {
+    Dot,
+    Bar,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -22,11 +30,17 @@ pub struct Settings {
     pub brightness: f32,
     pub green_brightness: f32,
 
-    pub always_on_top: bool,
+    pub display: DisplayMode,
+    /// 0 = Hauptbildschirm, danach von links nach rechts.
+    pub monitor: usize,
+    pub anchor: Anchor,
+    /// Abstand zum Bildschirmrand in Pixeln (bei 100 % Skalierung).
+    pub margin: f32,
+    pub dot_size: f32,
+    pub bar_width: f32,
+
     pub beep_enabled: bool,
     pub beep_volume: f32,
-
-    pub window_pos: Option<[f32; 2]>,
 }
 
 impl Default for Settings {
@@ -42,10 +56,14 @@ impl Default for Settings {
             hold_ms: 1500.0,
             brightness: 0.9,
             green_brightness: 0.25,
-            always_on_top: true,
+            display: DisplayMode::Dot,
+            monitor: 0,
+            anchor: Anchor::TopRight,
+            margin: 12.0,
+            dot_size: 20.0,
+            bar_width: 240.0,
             beep_enabled: false,
             beep_volume: 0.3,
-            window_pos: None,
         }
     }
 }

@@ -3,33 +3,44 @@
 
 mod app;
 mod audio;
+mod autostart;
 mod beep;
+mod instance;
 mod level;
+mod placement;
 mod settings;
+mod tray;
 mod updater;
+
+use std::time::Duration;
 
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    // Nach einem Update wartet die neue Version, bis die alte beendet ist.
+    let after_update = std::env::args().any(|a| a == updater::RESTART_ARG);
+    let wait = if after_update { Duration::from_secs(10) } else { Duration::ZERO };
+    let Some(instance) = instance::acquire(wait) else {
+        return Ok(());
+    };
+
     let settings = settings::load();
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_title("Lärmampel")
-        .with_inner_size(app::COMPACT_SIZE)
+        .with_inner_size([settings.dot_size, settings.dot_size])
         .with_decorations(false)
         .with_transparent(true)
-        .with_resizable(false);
-    if settings.always_on_top {
-        viewport = viewport.with_always_on_top();
-    }
-    if let Some([x, y]) = settings.window_pos {
-        viewport = viewport.with_position([x, y]);
-    }
+        .with_resizable(false)
+        .with_always_on_top()
+        .with_mouse_passthrough(true)
+        .with_taskbar(false)
+        .with_active(false);
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "Lärmampel",
         options,
-        Box::new(|cc| Ok(Box::new(app::LaermampelApp::new(settings, &cc.egui_ctx)))),
+        Box::new(move |cc| Ok(Box::new(app::LaermampelApp::new(settings, instance, &cc.egui_ctx)))),
     )
 }

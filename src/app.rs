@@ -1,22 +1,42 @@
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2, ViewportCommand, ViewportId};
 
 use crate::audio::{self, InputDevice, Meter};
+use crate::autostart;
 use crate::beep;
+use crate::instance;
 use crate::level::{Calibration, Level, Zone};
-use crate::settings::{self, Settings};
+use crate::placement::{self, Anchor, Monitor, PhysicalRect};
+use crate::settings::{self, DisplayMode, Settings};
+use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
 
-pub const COMPACT_SIZE: Vec2 = Vec2::new(300.0, 56.0);
-const EXPANDED_SIZE: Vec2 = Vec2::new(300.0, 720.0);
-
-/// Anzeigebereich des Balkens in dBFS.
+/// Anzeigebereich des Pegelbalkens in dBFS.
 const BAR_MIN_DB: f32 = -60.0;
 const BAR_MAX_DB: f32 = 0.0;
+const BAR_HEIGHT: f32 = 28.0;
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
+const MONITOR_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// So oft wird die Anzeige wieder nach ganz vorne geholt, falls ein Spiel sie verdeckt hat.
+const REASSERT_INTERVAL: Duration = Duration::from_secs(1);
+
+const RED_TEXT: Color32 = Color32::from_rgb(235, 90, 90);
+
+pub fn zone_rgb(zone: Zone) -> [u8; 3] {
+    match zone {
+        Zone::Green => [40, 200, 90],
+        Zone::Yellow => [245, 190, 20],
+        Zone::Red => [235, 45, 45],
+    }
+}
+
+fn zone_color(zone: Zone) -> Color32 {
+    let [r, g, b] = zone_rgb(zone);
+    Color32::from_rgb(r, g, b)
+}
 
 pub struct LaermampelApp {
     settings: Settings,
@@ -35,14 +55,24 @@ pub struct LaermampelApp {
     calibration: Option<Calibration>,
     calibration_message: Option<String>,
 
-    show_settings: bool,
-    applied_on_top: bool,
+    monitors: Vec<Monitor>,
+    last_monitor_scan: Instant,
+    applied_rect: Option<PhysicalRect>,
+    last_reassert: Instant,
+
+    settings_open: bool,
+    focus_settings: bool,
+    autostart_enabled: bool,
+    autostart_error: Option<String>,
+
+    tray: Option<Tray>,
+    instance: instance::Guard,
     updater: Updater,
 }
 
 impl LaermampelApp {
-    pub fn new(settings: Settings, ctx: &egui::Context) -> Self {
-        let applied_on_top = settings.always_on_top;
+    pub fn new(settings: Settings, instance: instance::Guard, ctx: &egui::Context) -> Self {
+        let tray = Tray::new();
         let mut app = Self {
             saved: settings.clone(),
             settings,
@@ -56,8 +86,17 @@ impl LaermampelApp {
             red_count: 0,
             calibration: None,
             calibration_message: None,
-            show_settings: false,
-            applied_on_top,
+            monitors: placement::monitors(),
+            last_monitor_scan: Instant::now(),
+            applied_rect: None,
+            last_reassert: Instant::now(),
+            // Ohne Symbol im Infobereich kämen wir sonst nie an die Einstellungen.
+            settings_open: tray.is_none(),
+            focus_settings: false,
+            autostart_enabled: autostart::is_enabled(),
+            autostart_error: None,
+            tray,
+            instance,
             updater: Updater::new(),
         };
         app.restart_meter();
@@ -77,18 +116,31 @@ impl LaermampelApp {
         }
     }
 
-    fn zone_color(&self, zone: Zone) -> Color32 {
-        match zone {
-            Zone::Green => Color32::from_rgb(40, 200, 90),
-            Zone::Yellow => Color32::from_rgb(245, 190, 20),
-            Zone::Red => Color32::from_rgb(235, 45, 45),
-        }
-    }
-
     fn zone_brightness(&self, zone: Zone) -> f32 {
         match zone {
             Zone::Green => self.settings.green_brightness,
             _ => self.settings.brightness,
+        }
+    }
+
+    fn indicator_size(&self) -> [f32; 2] {
+        match self.settings.display {
+            DisplayMode::Dot => [self.settings.dot_size, self.settings.dot_size],
+            DisplayMode::Bar => [self.settings.bar_width, BAR_HEIGHT],
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.focus_settings = true;
+        self.devices = audio::list_input_devices();
+        self.monitors = placement::monitors();
+    }
+
+    fn close_settings(&mut self, ctx: &egui::Context) {
+        self.settings_open = false;
+        if self.tray.is_none() {
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
 
@@ -102,9 +154,27 @@ impl LaermampelApp {
         ));
     }
 
-    fn draw_meter(&self, ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.0), Sense::hover());
-        let painter = ui.painter();
+    fn update_placement(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if self.last_monitor_scan.elapsed() >= MONITOR_SCAN_INTERVAL {
+            self.monitors = placement::monitors();
+            self.last_monitor_scan = Instant::now();
+        }
+        let target = placement::target_rect(
+            &self.monitors,
+            self.settings.monitor,
+            self.settings.anchor,
+            self.indicator_size(),
+            self.settings.margin,
+        );
+        let Some(target) = target else { return };
+        if Some(target) != self.applied_rect || self.last_reassert.elapsed() >= REASSERT_INTERVAL {
+            placement::apply(frame, target, ctx);
+            self.applied_rect = Some(target);
+            self.last_reassert = Instant::now();
+        }
+    }
+
+    fn draw_level_bar(&self, painter: &egui::Painter, rect: Rect) {
         let to_x = |db: f32| {
             let t = ((db - BAR_MIN_DB) / (BAR_MAX_DB - BAR_MIN_DB)).clamp(0.0, 1.0);
             rect.left() + t * rect.width()
@@ -112,21 +182,64 @@ impl LaermampelApp {
 
         painter.rect_filled(rect, CornerRadius::same(4), Color32::from_black_alpha(140));
         let fill = Rect::from_min_max(rect.min, Pos2::new(to_x(self.level.display_db), rect.max.y));
-        painter.rect_filled(fill, CornerRadius::same(4), self.zone_color(self.level.zone));
+        painter.rect_filled(fill, CornerRadius::same(4), zone_color(self.level.zone));
 
-        for (db, color) in [(self.settings.yellow_db, Color32::from_rgb(245, 190, 20)), (self.settings.red_db, Color32::from_rgb(235, 45, 45))] {
+        for (db, zone) in [(self.settings.yellow_db, Zone::Yellow), (self.settings.red_db, Zone::Red)] {
             let x = to_x(db);
             painter.line_segment(
                 [Pos2::new(x, rect.top() - 2.0), Pos2::new(x, rect.bottom() + 2.0)],
-                Stroke::new(2.0, color),
+                Stroke::new(2.0, zone_color(zone)),
             );
         }
     }
 
-    fn set_settings_open(&mut self, ctx: &egui::Context, open: bool) {
-        self.show_settings = open;
-        let size = if open { EXPANDED_SIZE } else { COMPACT_SIZE };
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+    fn draw_indicator(&self, ui: &mut egui::Ui) {
+        let rect = ui.max_rect();
+        let painter = ui.painter();
+        let zone = self.level.zone;
+        let brightness = self.zone_brightness(zone);
+        let tint = zone_color(zone).gamma_multiply(brightness);
+
+        match self.settings.display {
+            DisplayMode::Dot => {
+                if brightness <= 0.01 {
+                    return;
+                }
+                let radius = rect.width().min(rect.height()) / 2.0 - 1.0;
+                // Dunkler Rand, damit der Punkt auch vor hellem Hintergrund zu sehen ist.
+                let outline = Color32::from_black_alpha((160.0 * brightness) as u8);
+                painter.circle(rect.center(), radius, tint, Stroke::new(1.5, outline));
+            }
+            DisplayMode::Bar => {
+                painter.rect_filled(rect, CornerRadius::same(8), tint);
+                self.draw_level_bar(painter, rect.shrink(7.0));
+            }
+        }
+    }
+
+    fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let id = ViewportId::from_hash_of("einstellungen");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Lärmampel – Einstellungen")
+            .with_inner_size([400.0, 760.0])
+            .with_min_inner_size([340.0, 300.0]);
+
+        ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_ui(ui));
+            });
+            if ui.input(|i| i.viewport().close_requested()) {
+                self.close_settings(ui.ctx());
+            }
+        });
+
+        if self.focus_settings {
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+            self.focus_settings = false;
+        }
     }
 
     fn version_ui(&mut self, ui: &mut egui::Ui) {
@@ -146,7 +259,7 @@ impl LaermampelApp {
                 }
             }
             Status::Failed(e) => {
-                ui.colored_label(Color32::from_rgb(235, 90, 90), e);
+                ui.colored_label(RED_TEXT, e);
                 if ui.button("Nochmal versuchen").clicked() {
                     self.updater.check(&ctx);
                 }
@@ -178,7 +291,7 @@ impl LaermampelApp {
                     settings::save(&self.settings);
                     self.saved = self.settings.clone();
                     match updater::restart() {
-                        Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Ok(()) => ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close),
                         Err(e) => self.updater.fail(format!("Neustart fehlgeschlagen: {e}")),
                     }
                 }
@@ -186,43 +299,86 @@ impl LaermampelApp {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        self.version_ui(ui);
-        ui.add_space(8.0);
+    fn display_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Anzeige");
 
         let s = &mut self.settings;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut s.display, DisplayMode::Dot, "● Punkt");
+            ui.selectable_value(&mut s.display, DisplayMode::Bar, "▬ Leiste mit Pegel");
+        });
 
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Monitor");
+            let selected = match self.monitors.get(s.monitor) {
+                Some(m) => m.label(s.monitor),
+                None => format!("Monitor {} (nicht angeschlossen)", s.monitor + 1),
+            };
+            egui::ComboBox::from_id_salt("monitor").selected_text(selected).width(240.0).show_ui(ui, |ui| {
+                for (i, m) in self.monitors.iter().enumerate() {
+                    ui.selectable_value(&mut s.monitor, i, m.label(i));
+                }
+            });
+        });
+
+        ui.add_space(4.0);
+        ui.label("Position");
+        egui::Grid::new("anchor").num_columns(3).show(ui, |ui| {
+            for row in [Anchor::TOP_ROW, Anchor::BOTTOM_ROW] {
+                for anchor in row {
+                    ui.selectable_value(&mut s.anchor, anchor, anchor.label());
+                }
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(4.0);
+        match s.display {
+            DisplayMode::Dot => ui.add(egui::Slider::new(&mut s.dot_size, 6.0..=80.0).text("Größe").suffix(" px")),
+            DisplayMode::Bar => ui.add(egui::Slider::new(&mut s.bar_width, 100.0..=800.0).text("Breite").suffix(" px")),
+        };
+        ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
+        ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
+        ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
+    }
+
+    fn microphone_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Mikrofon");
-        let selected = self
-            .meter
-            .as_ref()
-            .map(|m| m.device_name.clone())
-            .unwrap_or_else(|| "–".to_string());
+        let selected = self.meter.as_ref().map(|m| m.device_name.clone()).unwrap_or_else(|| "–".to_string());
         let mut new_device: Option<Option<String>> = None;
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("device")
-                .selected_text(selected)
-                .width(200.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(s.device_id.is_none(), "Standardgerät").clicked() {
-                        new_device = Some(None);
+            egui::ComboBox::from_id_salt("device").selected_text(selected).width(260.0).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.device_id.is_none(), "Standardgerät").clicked() {
+                    new_device = Some(None);
+                }
+                for d in &self.devices {
+                    let active = self.settings.device_id.as_deref() == Some(d.id.as_str());
+                    if ui.selectable_label(active, &d.name).clicked() {
+                        new_device = Some(Some(d.id.clone()));
                     }
-                    for d in &self.devices {
-                        let active = s.device_id.as_deref() == Some(d.id.as_str());
-                        if ui.selectable_label(active, &d.name).clicked() {
-                            new_device = Some(Some(d.id.clone()));
-                        }
-                    }
-                });
+                }
+            });
             if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
                 self.devices = audio::list_input_devices();
             }
         });
         if let Some(err) = &self.meter_error {
-            ui.colored_label(Color32::from_rgb(235, 90, 90), err);
+            ui.colored_label(RED_TEXT, err);
+        }
+        if let Some(device) = new_device {
+            self.settings.device_id = device;
+            self.restart_meter();
         }
 
-        ui.add_space(8.0);
+        // Live-Pegel direkt hier, damit man beim Einstellen sieht, was passiert.
+        ui.add_space(4.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
+        self.draw_level_bar(ui.painter(), rect);
+        ui.label(format!("Aktuell: {:.1} dB", self.level.display_db));
+    }
+
+    fn calibration_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Einlernen");
         ui.label("Rede ein paar Sekunden in normaler Lautstärke. Gelb und Rot werden dann relativ dazu gesetzt.");
         if let Some(cal) = &self.calibration {
@@ -234,31 +390,36 @@ impl LaermampelApp {
         if let Some(msg) = &self.calibration_message {
             ui.label(msg);
         }
+        let s = &mut self.settings;
         ui.add(egui::Slider::new(&mut s.yellow_offset_db, 1.0..=20.0).text("Gelb über normal").suffix(" dB"));
         ui.add(egui::Slider::new(&mut s.red_offset_db, 1.0..=30.0).text("Rot über normal").suffix(" dB"));
+    }
 
-        ui.add_space(8.0);
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        self.version_ui(ui);
+        ui.separator();
+        self.display_ui(ui);
+        ui.separator();
+        self.microphone_ui(ui);
+        ui.separator();
+        self.calibration_ui(ui);
+        ui.separator();
+
+        let s = &mut self.settings;
         ui.heading("Schwellen");
-        ui.label(format!("Aktuell: {:.1} dB", self.level.display_db));
         ui.add(egui::Slider::new(&mut s.yellow_db, BAR_MIN_DB..=BAR_MAX_DB).text("Gelb ab").suffix(" dB"));
         ui.add(egui::Slider::new(&mut s.red_db, BAR_MIN_DB..=BAR_MAX_DB).text("Rot ab").suffix(" dB"));
         if s.red_db < s.yellow_db {
             s.red_db = s.yellow_db;
         }
 
-        ui.add_space(8.0);
+        ui.separator();
         ui.heading("Reaktion");
         ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"));
         ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
         ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
 
-        ui.add_space(8.0);
-        ui.heading("Anzeige");
-        ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
-        ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
-        ui.checkbox(&mut s.always_on_top, "Immer im Vordergrund");
-
-        ui.add_space(8.0);
+        ui.separator();
         ui.heading("Ton");
         ui.checkbox(&mut s.beep_enabled, "Kurzer Ton, wenn es rot wird");
         ui.horizontal(|ui| {
@@ -268,18 +429,34 @@ impl LaermampelApp {
             }
         });
 
-        ui.add_space(8.0);
-        ui.label(format!("Rot seit Programmstart: {}×", self.red_count));
+        if autostart::SUPPORTED {
+            ui.separator();
+            ui.heading("Start");
+            let mut enabled = self.autostart_enabled;
+            if ui.checkbox(&mut enabled, "Mit Windows starten").changed() {
+                match autostart::set_enabled(enabled) {
+                    Ok(()) => {
+                        self.autostart_enabled = enabled;
+                        self.autostart_error = None;
+                    }
+                    Err(e) => self.autostart_error = Some(e),
+                }
+            }
+            if let Some(err) = &self.autostart_error {
+                ui.colored_label(RED_TEXT, err);
+            }
+        }
 
-        if let Some(device) = new_device {
-            self.settings.device_id = device;
-            self.restart_meter();
+        ui.separator();
+        ui.label(format!("Rot seit Programmstart: {}×", self.red_count));
+        if ui.button("Lärmampel beenden").clicked() {
+            ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
 }
 
 impl eframe::App for LaermampelApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.2);
         self.last_tick = now;
@@ -312,18 +489,23 @@ impl eframe::App for LaermampelApp {
             }
         }
 
-        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-            self.settings.window_pos = Some([rect.min.x, rect.min.y]);
+        let actions = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
+        for action in actions {
+            match action {
+                TrayAction::OpenSettings => self.open_settings(),
+                TrayAction::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
+            }
         }
-        if self.settings.always_on_top != self.applied_on_top {
-            self.applied_on_top = self.settings.always_on_top;
-            let level = if self.settings.always_on_top {
-                egui::WindowLevel::AlwaysOnTop
-            } else {
-                egui::WindowLevel::Normal
-            };
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        if self.instance.show_requested() {
+            self.open_settings();
         }
+        let zone = self.level.zone;
+        if let Some(tray) = &mut self.tray {
+            tray.set_zone(zone);
+        }
+
+        self.update_placement(ctx, frame);
+
         if self.settings != self.saved && self.last_save.elapsed() >= SAVE_INTERVAL {
             settings::save(&self.settings);
             self.saved = self.settings.clone();
@@ -335,60 +517,9 @@ impl eframe::App for LaermampelApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let zone = self.level.zone;
-        let tint = self.zone_color(zone).gamma_multiply(self.zone_brightness(zone));
-        let background = Color32::from_rgb(24, 24, 28);
-
-        egui::Frame::new()
-            .fill(background)
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(0.0)
-            .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
-
-                // Kopfzeile: leuchtende Fläche in der Zonenfarbe, zum Verschieben des Fensters.
-                let (header, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), COMPACT_SIZE.y), Sense::click_and_drag());
-                if response.drag_started() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
-                ui.painter().rect_filled(header, CornerRadius::same(10), tint);
-
-                let inner = header.shrink2(Vec2::new(12.0, 10.0));
-                let meter_rect = Rect::from_min_max(
-                    Pos2::new(inner.left(), inner.center().y - 7.0),
-                    Pos2::new(inner.right() - 82.0, inner.center().y + 7.0),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(meter_rect), |ui| self.draw_meter(ui));
-
-                let buttons = Rect::from_min_max(Pos2::new(inner.right() - 76.0, inner.top()), inner.max);
-                let mut close = false;
-                let mut toggle_settings = false;
-                let mut open_settings = false;
-                let update_available = matches!(self.updater.status(), Status::Available(_) | Status::Installed(_));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(buttons), |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = ui.small_button("✕").on_hover_text("Beenden").clicked();
-                        let label = if self.show_settings { "▲" } else { "⚙" };
-                        toggle_settings = ui.small_button(label).on_hover_text("Einstellungen").clicked();
-                        if update_available && !self.show_settings {
-                            open_settings = ui.small_button("⬆").on_hover_text("Update verfügbar").clicked();
-                        }
-                    });
-                });
-                if toggle_settings || open_settings {
-                    let open = open_settings || !self.show_settings;
-                    self.set_settings_open(ui.ctx(), open);
-                }
-                if close {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-
-                if self.show_settings {
-                    egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
-                    });
-                }
-            });
+        self.draw_indicator(ui);
+        let ctx = ui.ctx().clone();
+        self.show_settings_window(&ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
