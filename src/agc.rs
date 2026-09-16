@@ -26,6 +26,10 @@ const PARAM_RELOAD_SAMPLES: usize = 256;
 const LEVEL_WINDOW_MS: f32 = 50.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
 const GATE_LEVEL_WINDOW_MS: f32 = 10.0;
+/// Fader und Mute weich überblenden, sonst knackt es.
+const FADER_SMOOTHING_MS: f32 = 10.0;
+const METER_WINDOW_MS: f32 = 50.0;
+const METER_PEAK_DECAY_DB_PER_SECOND: f32 = 20.0;
 /// So weit muss der Pegel unter die Schwelle fallen, bevor das Gate zu zählen beginnt.
 const GATE_HYSTERESIS_DB: f32 = 3.0;
 /// Liegt der Pegel so weit unter dem letzten Höchstwert, klingt gerade ein Wort aus.
@@ -61,6 +65,13 @@ pub struct AgcParams {
     pub gate_open: AtomicBool,
 
     pub agc_enabled: AtomicBool,
+
+    /// Fader in dB und Stummschaltung, wirken nach Gate und Kompressor.
+    pub fader_db: AtomicF32,
+    pub muted: AtomicBool,
+    /// Rückmeldung an die Oberfläche: Pegel am Ausgang, so wie andere dich hören.
+    pub out_level_db: AtomicF32,
+    pub out_peak_db: AtomicF32,
     pub target_db: AtomicF32,
     pub max_gain_db: AtomicF32,
     pub max_cut_db: AtomicF32,
@@ -86,32 +97,100 @@ pub fn list_output_devices() -> Vec<InputDevice> {
         .collect()
 }
 
-/// Mikrofon → Noise Gate → automatische Lautstärke → Puffer zur Ausgabe.
+/// Mikrofon → Gate → Kompressor → Fader/Mute → Limiter → Puffer zur Ausgabe.
 pub struct VoiceChain {
+    sample_rate: f32,
     gate: Gate,
     agc: Agc,
+    limiter: Limiter,
     params: Arc<AgcParams>,
     output: HeapProd<f32>,
+    countdown: usize,
+
+    fader_k: f32,
+    fader_target: f32,
+    fader_gain: f32,
+
+    meter_k: f32,
+    out_power: f32,
+    out_peak_db: f32,
 }
 
 impl VoiceChain {
     pub fn new(sample_rate: u32, params: Arc<AgcParams>, output: HeapProd<f32>) -> Self {
+        let rate = sample_rate as f32;
         Self {
-            gate: Gate::new(sample_rate as f32, Arc::clone(&params)),
-            agc: Agc::new(sample_rate as f32, Arc::clone(&params)),
+            sample_rate: rate,
+            gate: Gate::new(rate, Arc::clone(&params)),
+            agc: Agc::new(rate, Arc::clone(&params)),
+            limiter: Limiter::new(rate),
             params,
             output,
+            countdown: 0,
+            fader_k: smoothing(FADER_SMOOTHING_MS, rate),
+            fader_target: 1.0,
+            fader_gain: 1.0,
+            meter_k: smoothing(METER_WINDOW_MS, rate),
+            out_power: 0.0,
+            out_peak_db: -120.0,
         }
     }
 
+    fn reload(&mut self) {
+        let p = &self.params;
+        self.fader_target = if p.muted.load(Ordering::Relaxed) { 0.0 } else { db_to_gain(p.fader_db.get()) };
+        self.limiter.ceiling = db_to_gain(p.ceiling_db.get().min(0.0));
+        p.out_level_db.set(10.0 * self.out_power.max(1e-12).log10());
+        p.out_peak_db.set(self.out_peak_db);
+    }
+
     pub fn push(&mut self, x: f32) {
+        if self.countdown == 0 {
+            self.reload();
+            self.countdown = PARAM_RELOAD_SAMPLES;
+        }
+        self.countdown -= 1;
+
         let mut y = x;
         if self.params.gate_enabled.load(Ordering::Relaxed) {
             y = self.gate.process(y);
         }
-        y = if self.params.agc_enabled.load(Ordering::Relaxed) { self.agc.process(y) } else { y.clamp(-1.0, 1.0) };
+        if self.params.agc_enabled.load(Ordering::Relaxed) {
+            y = self.agc.process(y);
+        }
+        self.fader_gain += (self.fader_target - self.fader_gain) * self.fader_k;
+        y = self.limiter.process(y * self.fader_gain);
+
+        self.out_power += (y * y - self.out_power) * self.meter_k;
+        let peak_db = 20.0 * y.abs().max(1e-6).log10();
+        self.out_peak_db = (self.out_peak_db - METER_PEAK_DECAY_DB_PER_SECOND / self.sample_rate).max(peak_db);
+
         // Ist der Puffer voll, hängt die Ausgabe; dann lieber verwerfen als blockieren.
         let _ = self.output.try_push(y);
+    }
+}
+
+/// Lässt keine Spitze über die Obergrenze: sofort zupacken, langsam loslassen.
+struct Limiter {
+    release_k: f32,
+    envelope: f32,
+    ceiling: f32,
+}
+
+impl Limiter {
+    fn new(sample_rate: f32) -> Self {
+        Self { release_k: smoothing(LIMITER_RELEASE_MS, sample_rate), envelope: 0.0, ceiling: 1.0 }
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let peak = x.abs();
+        self.envelope = if peak > self.envelope {
+            peak
+        } else {
+            self.envelope + (peak - self.envelope) * self.release_k
+        };
+        let y = if self.envelope > self.ceiling { x * self.ceiling / self.envelope } else { x };
+        y.clamp(-self.ceiling, self.ceiling)
     }
 }
 
@@ -210,17 +289,14 @@ pub struct Agc {
     level_k: f32,
     attack_k: f32,
     release_k: f32,
-    limiter_k: f32,
     target_db: f32,
     max_gain_db: f32,
     max_cut_db: f32,
     gate_db: f32,
-    ceiling: f32,
 
     power: f32,
     recent_peak_db: f32,
     gain_db: f32,
-    limiter_env: f32,
 }
 
 impl Agc {
@@ -232,16 +308,13 @@ impl Agc {
             level_k: smoothing(LEVEL_WINDOW_MS, sample_rate),
             attack_k: 0.0,
             release_k: 0.0,
-            limiter_k: smoothing(LIMITER_RELEASE_MS, sample_rate),
             target_db: 0.0,
             max_gain_db: 0.0,
             max_cut_db: 0.0,
             gate_db: 0.0,
-            ceiling: 1.0,
             power: 0.0,
             recent_peak_db: -120.0,
             gain_db: 0.0,
-            limiter_env: 0.0,
         }
     }
 
@@ -253,7 +326,6 @@ impl Agc {
         self.max_gain_db = p.max_gain_db.get().max(0.0);
         self.max_cut_db = p.max_cut_db.get().max(0.0);
         self.gate_db = p.gate_db.get();
-        self.ceiling = db_to_gain(p.ceiling_db.get().min(0.0));
         p.current_gain_db.set(self.gain_db);
     }
 
@@ -279,19 +351,7 @@ impl Agc {
                 self.gain_db += (wanted - self.gain_db) * self.release_k;
             }
         }
-        let mut y = x * db_to_gain(self.gain_db);
-
-        // Limiter: sofort zupacken, langsam loslassen.
-        let peak = y.abs();
-        self.limiter_env = if peak > self.limiter_env {
-            peak
-        } else {
-            self.limiter_env + (peak - self.limiter_env) * self.limiter_k
-        };
-        if self.limiter_env > self.ceiling {
-            y *= self.ceiling / self.limiter_env;
-        }
-        y.clamp(-self.ceiling, self.ceiling)
+        x * db_to_gain(self.gain_db)
     }
 }
 
@@ -578,12 +638,10 @@ mod tests {
 
     #[test]
     fn ausgeschaltet_bleibt_signal_gleich() {
-        use ringbuf::traits::Split;
         let p = params();
         p.gate_enabled.store(false, Ordering::Relaxed);
         p.agc_enabled.store(false, Ordering::Relaxed);
-        let (producer, mut consumer) = ringbuf::HeapRb::<f32>::new(RATE as usize).split();
-        let mut chain = VoiceChain::new(RATE as u32, p, producer);
+        let (mut chain, mut consumer) = chain(p);
         let input = sine(RATE as usize / 2, -20.0);
         for &x in &input {
             chain.push(x);
@@ -592,12 +650,48 @@ mod tests {
         assert_eq!(output, input);
     }
 
+    fn chain(p: Arc<AgcParams>) -> (VoiceChain, HeapCons<f32>) {
+        use ringbuf::traits::Split;
+        let (producer, consumer) = ringbuf::HeapRb::<f32>::new(RATE as usize * 20).split();
+        (VoiceChain::new(RATE as u32, p, producer), consumer)
+    }
+
     #[test]
     fn limiter_haelt_obergrenze() {
-        let mut agc = Agc::new(RATE, params());
-        run(&mut agc, -45.0, 15.0);
-        // Plötzlicher Schrei bei voll aufgedrehter Verstärkung.
-        let (_, peak) = run(&mut agc, -3.0, 1.0);
+        let p = params();
+        p.agc_enabled.store(true, Ordering::Relaxed);
+        p.fader_db.set(12.0);
+        let (mut chain, mut consumer) = chain(p);
+        for x in sine(RATE as usize * 15, -45.0) {
+            chain.push(x);
+        }
+        // Plötzlicher Schrei bei voll aufgedrehter Verstärkung und Fader.
+        for x in sine(RATE as usize, -3.0) {
+            chain.push(x);
+        }
+        let peak = consumer.pop_iter().fold(0.0f32, |m, y| m.max(y.abs()));
         assert!(peak <= db_to_gain(-1.0) + 1e-6, "Spitze {peak}");
+    }
+
+    #[test]
+    fn fader_und_mute_wirken() {
+        let p = params();
+        p.fader_db.set(-6.0);
+        let (mut chain, mut consumer) = chain(Arc::clone(&p));
+        let input = sine(RATE as usize, -20.0);
+        for &x in &input {
+            chain.push(x);
+        }
+        let output: Vec<f32> = consumer.pop_iter().collect();
+        let tail = RATE as usize / 2;
+        let difference = rms_db(&input[tail..]) - rms_db(&output[tail..]);
+        assert!((difference - 6.0).abs() < 0.1, "{difference:.2} dB leiser");
+
+        p.muted.store(true, Ordering::Relaxed);
+        for &x in &input {
+            chain.push(x);
+        }
+        let muted: Vec<f32> = consumer.pop_iter().collect();
+        assert!(rms_db(&muted[tail..]) < -100.0, "stumm ist {} dB", rms_db(&muted[tail..]));
     }
 }

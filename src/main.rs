@@ -10,6 +10,7 @@ mod instance;
 mod level;
 mod placement;
 mod settings;
+mod strip;
 mod tray;
 mod updater;
 
