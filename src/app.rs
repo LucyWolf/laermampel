@@ -29,6 +29,11 @@ const PREVIEW_DURATION: Duration = Duration::from_secs(3);
 
 const RED_TEXT: Color32 = Color32::from_rgb(235, 90, 90);
 
+/// Ampel-Icon für Fenster, erzeugt von scripts/make_icon.py.
+pub fn app_icon() -> egui::IconData {
+    egui::IconData { rgba: include_bytes!("../assets/icon-64.rgba").to_vec(), width: 64, height: 64 }
+}
+
 pub fn zone_rgb(zone: Zone) -> [u8; 3] {
     match zone {
         Zone::Green => [40, 200, 90],
@@ -260,6 +265,7 @@ impl LaermampelApp {
         let id = ViewportId::from_hash_of("einstellungen");
         let builder = egui::ViewportBuilder::default()
             .with_title("Lärmampel – Einstellungen")
+            .with_icon(app_icon())
             .with_inner_size([400.0, 760.0])
             .with_min_inner_size([340.0, 300.0]);
 
@@ -324,26 +330,19 @@ impl LaermampelApp {
             Status::Installed(release) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("v{} installiert, starte neu …", release.version));
+                    ui.label(format!("Installiere v{} …", release.version));
                 });
             }
         }
     }
 
-    /// Beendet diesen Prozess sofort und startet die frisch installierte Version.
-    fn restart_into_update(&mut self) {
+    /// Der Installer läuft: Platz machen, damit er die Dateien ersetzen kann.
+    fn exit_for_update(&mut self) {
         settings::save(&self.settings);
         self.saved = self.settings.clone();
-        match updater::spawn_new_version() {
-            Ok(()) => {
-                // Symbol im Infobereich sauber entfernen, sonst bleibt ein Geist-Symbol stehen.
-                self.tray = None;
-                // Nicht auf das normale Schließen verlassen: die neue Version wartet auf
-                // diesen Prozess und soll nicht hängen bleiben.
-                std::process::exit(0);
-            }
-            Err(e) => self.updater.fail(format!("Neustart fehlgeschlagen: {e}. Bitte Lärmampel von Hand starten.")),
-        }
+        // Symbol im Infobereich sauber entfernen, sonst bleibt ein Geist-Symbol stehen.
+        self.tray = None;
+        std::process::exit(0);
     }
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
@@ -403,7 +402,16 @@ impl LaermampelApp {
 
     fn microphone_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Mikrofon");
-        let selected = self.meter.as_ref().map(|m| m.device_name.clone()).unwrap_or_else(|| "–".to_string());
+        // Auch ohne laufende Aufnahme anzeigen, was ausgewählt ist.
+        let selected = match &self.settings.device_id {
+            None => "Standardgerät".to_string(),
+            Some(id) => self
+                .devices
+                .iter()
+                .find(|d| &d.id == id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| "Gewähltes Mikrofon (nicht gefunden)".to_string()),
+        };
         let mut new_device: Option<Option<String>> = None;
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("device").selected_text(selected).width(260.0).show_ui(ui, |ui| {
@@ -579,9 +587,9 @@ impl eframe::App for LaermampelApp {
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.2);
         self.last_tick = now;
 
-        if self.meter.as_ref().is_some_and(Meter::failed) {
+        if let Some(fault) = self.meter.as_ref().and_then(Meter::fault) {
             self.meter = None;
-            self.meter_error = Some("Mikrofon getrennt, verbinde neu …".to_string());
+            self.meter_error = Some(format!("{fault} Verbinde neu …"));
         }
         if self.meter.is_none() && self.last_retry.elapsed() >= RETRY_INTERVAL {
             self.restart_meter();
@@ -625,7 +633,7 @@ impl eframe::App for LaermampelApp {
         }
 
         if matches!(self.updater.status(), Status::Installed(_)) {
-            self.restart_into_update();
+            self.exit_for_update();
         }
 
         self.update_placement(ctx, frame);

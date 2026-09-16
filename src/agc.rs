@@ -2,14 +2,14 @@
 //! Audiogerät (VB-Cable) aus, das andere Programme als Mikrofon benutzen.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use ringbuf::HeapCons;
 use ringbuf::traits::{Consumer, Observer};
 
-use crate::audio::InputDevice;
+use crate::audio::{Fault, InputDevice, describe};
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
@@ -178,7 +178,7 @@ pub fn start_output(
     device_id: Option<&str>,
     samples: HeapCons<f32>,
     input_rate: u32,
-    failed: Arc<AtomicBool>,
+    fault: Arc<Fault>,
 ) -> Result<(cpal::Stream, String), String> {
     let host = cpal::default_host();
     let device = match device_id.and_then(|s| s.parse::<cpal::DeviceId>().ok()) {
@@ -196,16 +196,16 @@ pub fn start_output(
     let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Ausgabe".to_string());
     let config = device
         .default_output_config()
-        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {e}"))?;
+        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))?;
 
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build::<f32>(&device, &config, samples, input_rate, failed),
-        SampleFormat::I16 => build::<i16>(&device, &config, samples, input_rate, failed),
-        SampleFormat::I32 => build::<i32>(&device, &config, samples, input_rate, failed),
-        SampleFormat::U16 => build::<u16>(&device, &config, samples, input_rate, failed),
+        SampleFormat::F32 => build::<f32>(&device, &config, samples, input_rate, fault),
+        SampleFormat::I16 => build::<i16>(&device, &config, samples, input_rate, fault),
+        SampleFormat::I32 => build::<i32>(&device, &config, samples, input_rate, fault),
+        SampleFormat::U16 => build::<u16>(&device, &config, samples, input_rate, fault),
         other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
     }?;
-    stream.play().map_err(|e| format!("Ausgabe lässt sich nicht starten: {e}"))?;
+    stream.play().map_err(|e| format!("Ausgabe lässt sich nicht starten: {}", describe(&e)))?;
     Ok((stream, name))
 }
 
@@ -214,7 +214,7 @@ fn build<T>(
     config: &cpal::SupportedStreamConfig,
     mut samples: HeapCons<f32>,
     input_rate: u32,
-    failed: Arc<AtomicBool>,
+    fault: Arc<Fault>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample + FromSample<f32> + Send + 'static,
@@ -233,10 +233,10 @@ where
                     frame.fill(T::from_sample(value));
                 }
             },
-            move |_err| failed.store(true, Ordering::Relaxed),
+            move |err| fault.report(err),
             None,
         )
-        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {e}"))
+        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))
 }
 
 /// Holt die Samples aus dem Puffer, rechnet die Abtastrate um und gleicht Gangunterschiede aus.

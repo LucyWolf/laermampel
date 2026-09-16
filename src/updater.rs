@@ -1,7 +1,6 @@
-//! Update-Prüfung und Selbst-Update über die GitHub-Releases.
+//! Update-Prüfung und Update über den Installer aus den GitHub-Releases.
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui;
@@ -9,20 +8,10 @@ use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/LucyWolf/laermampel/releases/latest";
-const ASSET_NAME: &str = "laermampel.exe";
+const SETUP_PREFIX: &str = "Laermampel-Setup-";
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Startargument der neuen Version nach einem Update.
 pub const RESTART_ARG: &str = "--nach-update";
-
-/// Pfad der .exe beim Programmstart. Nach dem Ersetzen zeigt `current_exe()` womöglich
-/// auf die weggeschobene alte Datei, deshalb wird er vorher gemerkt.
-static EXE_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-pub fn remember_exe_path() {
-    if let Ok(path) = std::env::current_exe() {
-        let _ = EXE_PATH.set(path);
-    }
-}
 
 #[derive(Clone)]
 pub struct Release {
@@ -32,7 +21,7 @@ pub struct Release {
 }
 
 impl Release {
-    /// Selbst ersetzen geht nur unter Windows, woanders gibt es nur den Link.
+    /// Installieren geht nur unter Windows, woanders gibt es nur den Link.
     pub fn installable(&self) -> bool {
         cfg!(windows) && self.download_url.is_some()
     }
@@ -45,7 +34,7 @@ pub enum Status {
     UpToDate,
     Available(Release),
     Installing(Release),
-    /// Neue Version ersetzt die alte, die App startet sich gleich neu.
+    /// Installer läuft, dieses Programm beendet sich gleich; der Installer startet die neue Version.
     Installed(Release),
     Failed(String),
 }
@@ -95,16 +84,10 @@ impl Updater {
         if self.is_busy() {
             return;
         }
-        self.run(ctx, Status::Installing(release.clone()), move || match download_and_replace(&release) {
+        self.run(ctx, Status::Installing(release.clone()), move || match download_and_run_setup(&release) {
             Ok(()) => Status::Installed(release),
             Err(e) => Status::Failed(format!("Update fehlgeschlagen: {e}")),
         });
-    }
-
-    pub fn fail(&self, message: String) {
-        if let Ok(mut s) = self.status.lock() {
-            *s = Status::Failed(message);
-        }
     }
 
     fn run(&self, ctx: &egui::Context, busy: Status, job: impl FnOnce() -> Status + Send + 'static) {
@@ -150,14 +133,14 @@ fn fetch_latest() -> Result<Release, String> {
     let download_url = release
         .assets
         .into_iter()
-        .find(|a| a.name == ASSET_NAME)
+        .find(|a| a.name.starts_with(SETUP_PREFIX) && a.name.ends_with(".exe"))
         .map(|a| a.browser_download_url);
 
     Ok(Release { version, page_url: release.html_url, download_url })
 }
 
-fn download_and_replace(release: &Release) -> Result<(), String> {
-    let url = release.download_url.as_deref().ok_or("Keine .exe im Release")?;
+fn download_and_run_setup(release: &Release) -> Result<(), String> {
+    let url = release.download_url.as_deref().ok_or("Kein Installer im Release")?;
     let bytes = agent()
         .get(url)
         .call()
@@ -170,19 +153,17 @@ fn download_and_replace(release: &Release) -> Result<(), String> {
 
     // Eine Windows-Exe beginnt immer mit "MZ", schützt vor Fehlerseiten statt Datei.
     if !bytes.starts_with(b"MZ") {
-        return Err("Heruntergeladene Datei ist keine gültige .exe".to_string());
+        return Err("Heruntergeladene Datei ist kein gültiger Installer".to_string());
     }
 
-    let tmp = std::env::temp_dir().join(format!("laermampel-{}.exe", release.version));
-    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-    let result = self_replace::self_replace(&tmp).map_err(|e| e.to_string());
-    let _ = std::fs::remove_file(&tmp);
-    result
-}
+    let setup = std::env::temp_dir().join(format!("{SETUP_PREFIX}{}.exe", release.version));
+    std::fs::write(&setup, &bytes).map_err(|e| e.to_string())?;
 
-/// Startet die neue .exe am ursprünglichen Ort. Die wartet, bis dieser Prozess weg ist.
-pub fn spawn_new_version() -> Result<(), String> {
-    let exe = EXE_PATH.get().ok_or("Programmpfad unbekannt")?;
-    std::process::Command::new(exe).arg(RESTART_ARG).spawn().map_err(|e| e.to_string())?;
+    // Ohne Rückfragen, aber mit Fortschrittsfenster. Der Installer schließt eine noch laufende
+    // Lärmampel selbst und startet am Ende die neue Version.
+    std::process::Command::new(&setup)
+        .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
+        .spawn()
+        .map_err(|e| format!("Installer lässt sich nicht starten: {e}"))?;
     Ok(())
 }

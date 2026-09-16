@@ -1,6 +1,5 @@
 //! Mikrofon einlesen und kurzzeitige Pegel (dBFS) bereitstellen.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -17,6 +16,44 @@ const HIGHPASS_HZ: f32 = 100.0;
 const LOWPASS_HZ: f32 = 4000.0;
 
 pub const SILENCE_DB: f32 = -100.0;
+
+/// Merkt sich einen Fehler aus einem Audio-Stream, der einen Neustart nötig macht.
+#[derive(Default)]
+pub struct Fault(Mutex<Option<String>>);
+
+impl Fault {
+    /// Unter Windows kommen über den Fehlerkanal auch reine Hinweise (kein Echtzeit-Vorrang,
+    /// kurzer Knackser, Gerät automatisch umgeleitet). Die Aufnahme läuft dabei weiter.
+    pub fn report(&self, err: cpal::Error) {
+        use cpal::ErrorKind::{DeviceChanged, RealtimeDenied, Xrun};
+        if matches!(err.kind(), DeviceChanged | RealtimeDenied | Xrun) {
+            return;
+        }
+        if let Ok(mut slot) = self.0.lock() {
+            slot.get_or_insert_with(|| describe(&err));
+        }
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|s| s.clone())
+    }
+}
+
+/// Verständliche Fehlermeldung, bei den typischen Windows-Ursachen mit Lösung.
+pub fn describe(err: &cpal::Error) -> String {
+    match err.kind() {
+        cpal::ErrorKind::PermissionDenied => "Zugriff verweigert. Windows-Einstellungen → Datenschutz → Mikrofon → \
+             „Desktop-Apps Zugriff auf das Mikrofon erlauben“ einschalten."
+            .to_string(),
+        cpal::ErrorKind::DeviceBusy => {
+            "Gerät ist belegt. Ein anderes Programm nutzt es exklusiv \
+             (Windows-Soundeinstellungen → Gerät → Erweitert → exklusive Nutzung abschalten)."
+                .to_string()
+        }
+        cpal::ErrorKind::DeviceNotAvailable => "Gerät nicht verfügbar, vermutlich abgesteckt.".to_string(),
+        _ => err.to_string(),
+    }
+}
 
 pub struct InputDevice {
     pub id: String,
@@ -56,8 +93,7 @@ pub struct Meter {
     _stream: cpal::Stream,
     _output: Option<cpal::Stream>,
     shared: Arc<Mutex<Shared>>,
-    failed: Arc<AtomicBool>,
-    pub device_name: String,
+    fault: Arc<Fault>,
     pub agc_output_name: Option<String>,
     pub agc_error: Option<String>,
 }
@@ -72,17 +108,12 @@ impl Meter {
             .or_else(|| host.default_input_device())
             .ok_or_else(|| "Kein Mikrofon gefunden".to_string())?;
 
-        let device_name = device
-            .description()
-            .map(|d| d.name().to_string())
-            .unwrap_or_else(|_| "Mikrofon".to_string());
-
         let config = device
             .default_input_config()
-            .map_err(|e| format!("Mikrofon lässt sich nicht öffnen: {e}"))?;
+            .map_err(|e| format!("Mikrofon lässt sich nicht öffnen: {}", describe(&e)))?;
 
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
-        let failed = Arc::new(AtomicBool::new(false));
+        let fault = Arc::new(Fault::default());
 
         // Erst die Ausgabe öffnen: klappt das nicht, läuft die Ampel trotzdem weiter.
         let input_rate = config.sample_rate();
@@ -92,7 +123,7 @@ impl Meter {
         let mut chain = None;
         if let Some(setup) = agc_setup {
             let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
-            match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&failed)) {
+            match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&fault)) {
                 Ok((stream, name)) => {
                     output = Some(stream);
                     agc_output_name = Some(name);
@@ -103,23 +134,22 @@ impl Meter {
         }
 
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &failed, chain),
-            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &failed, chain),
-            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &failed, chain),
-            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &failed, chain),
-            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &failed, chain),
+            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &fault, chain),
+            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &fault, chain),
+            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, chain),
+            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, chain),
+            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, chain),
             other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
         }?;
         stream
             .play()
-            .map_err(|e| format!("Aufnahme lässt sich nicht starten: {e}"))?;
+            .map_err(|e| format!("Aufnahme lässt sich nicht starten: {}", describe(&e)))?;
 
         Ok(Meter {
             _stream: stream,
             _output: output,
             shared,
-            failed,
-            device_name,
+            fault,
             agc_output_name,
             agc_error,
         })
@@ -137,8 +167,9 @@ impl Meter {
         Some(peak)
     }
 
-    pub fn failed(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
+    /// Fehler, der einen Neustart der Aufnahme nötig macht.
+    pub fn fault(&self) -> Option<String> {
+        self.fault.get()
     }
 }
 
@@ -146,7 +177,7 @@ fn build<T>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     shared: &Arc<Mutex<Shared>>,
-    failed: &Arc<AtomicBool>,
+    fault: &Arc<Fault>,
     chain: Option<(Agc, HeapProd<f32>)>,
 ) -> Result<cpal::Stream, String>
 where
@@ -156,7 +187,7 @@ where
     let sample_rate = config.sample_rate() as f32;
     let channels = config.channels().max(1) as usize;
     let mut proc = Processor::new(sample_rate, Arc::clone(shared), chain);
-    let failed = Arc::clone(failed);
+    let fault = Arc::clone(fault);
 
     device
         .build_input_stream(
@@ -167,10 +198,10 @@ where
                     proc.push(f32::from_sample(frame[0]));
                 }
             },
-            move |_err| failed.store(true, Ordering::Relaxed),
+            move |err| fault.report(err),
             None,
         )
-        .map_err(|e| format!("Aufnahme lässt sich nicht öffnen: {e}"))
+        .map_err(|e| format!("Aufnahme lässt sich nicht öffnen: {}", describe(&e)))
 }
 
 struct Processor {
