@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2, ViewportCommand, ViewportId};
 
 use crate::agc::{self, AgcParams};
-use crate::audio::{self, AgcSetup, InputDevice, Meter};
+use crate::audio::{self, InputDevice, Meter, VoiceSetup};
 use crate::autostart;
 use crate::beep;
 use crate::instance;
@@ -123,11 +123,11 @@ impl LaermampelApp {
     fn restart_meter(&mut self) {
         self.meter = None;
         self.last_retry = Instant::now();
-        let agc_setup = self.settings.agc_enabled.then(|| AgcSetup {
+        let voice_setup = self.voice_output_wanted().then(|| VoiceSetup {
             output_id: self.settings.agc_output_id.clone(),
             params: Arc::clone(&self.agc_params),
         });
-        match Meter::start(self.settings.device_id.as_deref(), agc_setup) {
+        match Meter::start(self.settings.device_id.as_deref(), voice_setup) {
             Ok(m) => {
                 self.meter = Some(m);
                 self.meter_error = None;
@@ -136,8 +136,16 @@ impl LaermampelApp {
         }
     }
 
+    /// Braucht irgendeine Funktion die Ausgabe auf VB-Cable?
+    fn voice_output_wanted(&self) -> bool {
+        self.settings.noise_filter_enabled || self.settings.agc_enabled
+    }
+
     fn sync_agc_params(&self) {
+        use std::sync::atomic::Ordering;
         let (s, p) = (&self.settings, &self.agc_params);
+        p.denoise_enabled.store(s.noise_filter_enabled, Ordering::Relaxed);
+        p.agc_enabled.store(s.agc_enabled, Ordering::Relaxed);
         p.target_db.set(s.agc_target_db);
         p.max_gain_db.set(s.agc_max_gain_db);
         p.max_cut_db.set(s.agc_max_cut_db);
@@ -445,13 +453,18 @@ impl LaermampelApp {
     }
 
     fn agc_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Automatische Lautstärke");
-        ui.label("Hebt leise Sprache an und regelt laute runter, für alle Programme. Braucht VB-Cable.");
+        ui.heading("Mikrofon für andere Programme");
+        ui.label("Bearbeitet dein Mikrofon für Discord, Spiele usw. Braucht VB-Cable.");
 
-        let mut restart = false;
-        restart |= ui.checkbox(&mut self.settings.agc_enabled, "Mikrofon automatisch angleichen").changed();
+        let was_wanted = self.voice_output_wanted();
+        ui.checkbox(&mut self.settings.noise_filter_enabled, "Rauschfilter")
+            .on_hover_text("Entfernt Tastatur, Lüfter, Brummen und andere Hintergrundgeräusche");
+        ui.checkbox(&mut self.settings.agc_enabled, "Automatische Lautstärke")
+            .on_hover_text("Hebt leise Sprache an und regelt laute runter");
+        // Filter und Lautstärke schalten live um, nur die Ausgabe selbst braucht einen Neustart.
+        let mut restart = was_wanted != self.voice_output_wanted();
 
-        if self.settings.agc_enabled {
+        if self.voice_output_wanted() {
             let active = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
             let error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
 
@@ -483,9 +496,13 @@ impl LaermampelApp {
             } else if active.is_some() {
                 ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
                 let gain = self.agc_params.current_gain_db.get();
-                ui.label(format!("Aktuelle Anpassung: {gain:+.1} dB"));
+                if self.settings.agc_enabled {
+                    ui.label(format!("Aktuelle Anpassung: {gain:+.1} dB"));
+                }
             }
+        }
 
+        if self.settings.agc_enabled {
             let s = &mut self.settings;
             ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
             ui.add(egui::Slider::new(&mut s.agc_max_gain_db, 0.0..=30.0).text("Höchstens lauter").suffix(" dB"));

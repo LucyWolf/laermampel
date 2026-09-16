@@ -1,17 +1,20 @@
-//! Automatische Lautstärke: gleicht das Mikrofon an und gibt es auf ein virtuelles
-//! Audiogerät (VB-Cable) aus, das andere Programme als Mikrofon benutzen.
+//! Mikrofon für andere Programme: Rauschfilter und automatische Lautstärke, ausgegeben
+//! auf ein virtuelles Audiogerät (VB-Cable), das andere Programme als Mikrofon benutzen.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use ringbuf::HeapCons;
-use ringbuf::traits::{Consumer, Observer};
+use nnnoiseless::DenoiseState;
+use ringbuf::traits::{Consumer, Observer, Producer};
+use ringbuf::{HeapCons, HeapProd};
 
 use crate::audio::{Fault, InputDevice, describe};
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
+/// Der Rauschfilter (RNNoise) arbeitet fest mit 48 kHz, die ganze Kette deshalb auch.
+pub const CHAIN_RATE: u32 = 48_000;
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
 const VB_CABLE_HINT: &str = "cable input";
 
@@ -46,6 +49,8 @@ impl AtomicF32 {
 /// Einstellungen, die live aus der Oberfläche übernommen werden.
 #[derive(Default)]
 pub struct AgcParams {
+    pub denoise_enabled: AtomicBool,
+    pub agc_enabled: AtomicBool,
     pub target_db: AtomicF32,
     pub max_gain_db: AtomicF32,
     pub max_cut_db: AtomicF32,
@@ -69,6 +74,104 @@ pub fn list_output_devices() -> Vec<InputDevice> {
             Some(InputDevice { id, name })
         })
         .collect()
+}
+
+/// Mikrofon → (48 kHz) → Rauschfilter → automatische Lautstärke → Puffer zur Ausgabe.
+pub struct VoiceChain {
+    upsampler: Option<LinearResampler>,
+    scratch: Vec<f32>,
+    frame: Vec<f32>,
+    scaled: Vec<f32>,
+    cleaned: Vec<f32>,
+    denoise: Box<DenoiseState<'static>>,
+    agc: Agc,
+    params: Arc<AgcParams>,
+    output: HeapProd<f32>,
+}
+
+impl VoiceChain {
+    pub fn new(input_rate: u32, params: Arc<AgcParams>, output: HeapProd<f32>) -> Self {
+        let upsampler = (input_rate != CHAIN_RATE).then(|| LinearResampler::new(input_rate as f64 / CHAIN_RATE as f64));
+        Self {
+            upsampler,
+            scratch: Vec::with_capacity(8),
+            frame: Vec::with_capacity(DenoiseState::FRAME_SIZE),
+            scaled: vec![0.0; DenoiseState::FRAME_SIZE],
+            cleaned: vec![0.0; DenoiseState::FRAME_SIZE],
+            denoise: DenoiseState::new(),
+            agc: Agc::new(CHAIN_RATE as f32, Arc::clone(&params)),
+            params,
+            output,
+        }
+    }
+
+    pub fn push(&mut self, x: f32) {
+        match &mut self.upsampler {
+            None => self.push_48k(x),
+            Some(upsampler) => {
+                upsampler.feed(x, &mut self.scratch);
+                for i in 0..self.scratch.len() {
+                    let y = self.scratch[i];
+                    self.push_48k(y);
+                }
+                self.scratch.clear();
+            }
+        }
+    }
+
+    fn push_48k(&mut self, x: f32) {
+        self.frame.push(x);
+        if self.frame.len() == DenoiseState::FRAME_SIZE {
+            self.process_frame();
+            self.frame.clear();
+        }
+    }
+
+    fn process_frame(&mut self) {
+        if self.params.denoise_enabled.load(Ordering::Relaxed) {
+            // RNNoise erwartet Werte im 16-Bit-Bereich.
+            for (s, &x) in self.scaled.iter_mut().zip(&self.frame) {
+                *s = x * 32768.0;
+            }
+            self.denoise.process_frame(&mut self.cleaned, &self.scaled);
+            for v in &mut self.cleaned {
+                *v /= 32768.0;
+            }
+        } else {
+            self.cleaned.copy_from_slice(&self.frame);
+        }
+
+        let agc_on = self.params.agc_enabled.load(Ordering::Relaxed);
+        for &v in &self.cleaned {
+            let y = if agc_on { self.agc.process(v) } else { v.clamp(-1.0, 1.0) };
+            // Ist der Puffer voll, hängt die Ausgabe; dann lieber verwerfen als blockieren.
+            let _ = self.output.try_push(y);
+        }
+    }
+}
+
+/// Lineare Umrechnung auf 48 kHz, reicht für Sprache.
+struct LinearResampler {
+    step: f64,
+    pos: f64,
+    previous: f32,
+    current: f32,
+}
+
+impl LinearResampler {
+    fn new(step: f64) -> Self {
+        Self { step, pos: 0.0, previous: 0.0, current: 0.0 }
+    }
+
+    fn feed(&mut self, x: f32, out: &mut Vec<f32>) {
+        self.previous = self.current;
+        self.current = x;
+        while self.pos < 1.0 {
+            out.push(self.previous + (self.current - self.previous) * self.pos as f32);
+            self.pos += self.step;
+        }
+        self.pos -= 1.0;
+    }
 }
 
 fn db_to_gain(db: f32) -> f32 {
@@ -395,6 +498,67 @@ mod tests {
         assert_eq!(underruns, 0, "Aussetzer bei {input_per_block}");
         assert!(max_fill < 4_800, "Puffer {max_fill} Samples bei {input_per_block}");
         }
+    }
+
+    fn chain_with(input_rate: u32, denoise: bool) -> (VoiceChain, HeapCons<f32>) {
+        use ringbuf::traits::Split;
+        let p = params();
+        p.denoise_enabled.store(denoise, Ordering::Relaxed);
+        p.agc_enabled.store(false, Ordering::Relaxed);
+        let (producer, consumer) = ringbuf::HeapRb::<f32>::new(CHAIN_RATE as usize * 4).split();
+        (VoiceChain::new(input_rate, p, producer), consumer)
+    }
+
+    fn rms_db(samples: &[f32]) -> f32 {
+        let power = samples.iter().map(|&x| (x * x) as f64).sum::<f64>() / samples.len() as f64;
+        10.0 * power.log10() as f32
+    }
+
+    /// Gleichmäßiges Rauschen, reproduzierbar ohne Zufallsbibliothek.
+    fn noise(n: usize, level: f32) -> Vec<f32> {
+        let mut state = 0x1234_5678u32;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rauschfilter_entfernt_rauschen() {
+        let input = noise(CHAIN_RATE as usize * 3, 0.05);
+        let (mut chain, mut consumer) = chain_with(CHAIN_RATE, true);
+        for &x in &input {
+            chain.push(x);
+        }
+        let output: Vec<f32> = consumer.pop_iter().collect();
+        let last = CHAIN_RATE as usize;
+        let reduction = rms_db(&input[input.len() - last..]) - rms_db(&output[output.len() - last..]);
+        assert!(reduction > 10.0, "nur {reduction:.1} dB leiser");
+    }
+
+    #[test]
+    fn ohne_rauschfilter_bleibt_signal_gleich() {
+        let input = noise(CHAIN_RATE as usize, 0.05);
+        let (mut chain, mut consumer) = chain_with(CHAIN_RATE, false);
+        for &x in &input {
+            chain.push(x);
+        }
+        let output: Vec<f32> = consumer.pop_iter().collect();
+        assert_eq!(output.len(), input.len());
+        assert_eq!(output[..], input[..]);
+    }
+
+    #[test]
+    fn andere_abtastrate_wird_auf_48k_gebracht() {
+        let (mut chain, mut consumer) = chain_with(44_100, false);
+        for i in 0..44_100 {
+            chain.push((i as f32 * 0.01).sin() * 0.5);
+        }
+        let count = consumer.pop_iter().count();
+        // Eine Sekunde rein ergibt eine Sekunde raus, bis auf einen angefangenen 10-ms-Block.
+        assert!((47_500..=48_000).contains(&count), "{count} Samples");
     }
 
     #[test]

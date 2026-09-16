@@ -42,7 +42,8 @@ pub struct Settings {
     pub beep_enabled: bool,
     pub beep_volume: f32,
 
-    /// Automatische Lautstärke über VB-Cable.
+    /// Mikrofon für andere Programme über VB-Cable.
+    pub noise_filter_enabled: bool,
     pub agc_enabled: bool,
     pub agc_output_id: Option<String>,
     /// Ziel-Sprachpegel in dBFS (RMS).
@@ -79,6 +80,7 @@ impl Default for Settings {
             bar_width: 240.0,
             beep_enabled: false,
             beep_volume: 0.3,
+            noise_filter_enabled: false,
             agc_enabled: false,
             agc_output_id: None,
             agc_target_db: -20.0,

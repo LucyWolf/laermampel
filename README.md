@@ -11,7 +11,7 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 - Symbol im Infobereich neben der Uhr, zeigt ebenfalls die Ampelfarbe
 - Liest das Mikrofon parallel zu Discord und Co., nimmt nichts weg
 - Updates mit einem Klick
-- Automatische Lautstärke für alle Programme: leise Sprache wird angehoben, laute abgesenkt (über VB-Cable)
+- Mikrofon für alle Programme verbessern (über VB-Cable): Rauschfilter und automatische Lautstärke
 
 ## Installation
 
@@ -32,10 +32,15 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
   der Installer läuft ohne Rückfragen durch und startet die Lärmampel danach neu.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
 
-### Automatische Lautstärke
+### Rauschfilter und automatische Lautstärke
+
+Beides bearbeitet nur dein Mikrofon, nicht das, was du hörst.
+
+- **Rauschfilter** (RNNoise): entfernt Tastatur, Lüfter, Brummen und andere Hintergrundgeräusche.
+- **Automatische Lautstärke:** hebt leise Sprache an, regelt laute runter, Limiter gegen Übersteuern.
 
 1. [VB-Cable](https://vb-audio.com/Cable/) installieren (kostenlos, braucht Adminrechte und einen Neustart).
-2. In der Lärmampel unter Einstellungen → Automatische Lautstärke einschalten. VB-Cable wird von selbst gefunden.
+2. In der Lärmampel unter Einstellungen → Mikrofon für andere Programme das Gewünschte einschalten. VB-Cable wird von selbst gefunden.
 3. In Discord, Spielen, OBS usw. als Mikrofon **„CABLE Output“** auswählen.
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
