@@ -18,8 +18,9 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     // Nach einem Update wartet die neue Version, bis die alte beendet ist.
+    updater::remember_exe_path();
     let after_update = std::env::args().any(|a| a == updater::RESTART_ARG);
-    let wait = if after_update { Duration::from_secs(10) } else { Duration::ZERO };
+    let wait = if after_update { Duration::from_secs(30) } else { Duration::ZERO };
     let Some(instance) = instance::acquire(wait) else {
         return Ok(());
     };

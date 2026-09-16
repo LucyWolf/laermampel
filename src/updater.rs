@@ -1,6 +1,7 @@
 //! Update-Prüfung und Selbst-Update über die GitHub-Releases.
 
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use eframe::egui;
@@ -12,6 +13,16 @@ const ASSET_NAME: &str = "laermampel.exe";
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Startargument der neuen Version nach einem Update.
 pub const RESTART_ARG: &str = "--nach-update";
+
+/// Pfad der .exe beim Programmstart. Nach dem Ersetzen zeigt `current_exe()` womöglich
+/// auf die weggeschobene alte Datei, deshalb wird er vorher gemerkt.
+static EXE_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn remember_exe_path() {
+    if let Ok(path) = std::env::current_exe() {
+        let _ = EXE_PATH.set(path);
+    }
+}
 
 #[derive(Clone)]
 pub struct Release {
@@ -34,7 +45,7 @@ pub enum Status {
     UpToDate,
     Available(Release),
     Installing(Release),
-    /// Neue Version liegt bereit, wird beim nächsten Start aktiv.
+    /// Neue Version ersetzt die alte, die App startet sich gleich neu.
     Installed(Release),
     Failed(String),
 }
@@ -169,9 +180,9 @@ fn download_and_replace(release: &Release) -> Result<(), String> {
     result
 }
 
-/// Startet die (inzwischen ersetzte) eigene .exe neu.
-pub fn restart() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+/// Startet die neue .exe am ursprünglichen Ort. Die wartet, bis dieser Prozess weg ist.
+pub fn spawn_new_version() -> Result<(), String> {
+    let exe = EXE_PATH.get().ok_or("Programmpfad unbekannt")?;
     std::process::Command::new(exe).arg(RESTART_ARG).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
