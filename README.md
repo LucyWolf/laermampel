@@ -55,9 +55,13 @@ Unter Linux wird zusätzlich `libasound2-dev` (bzw. `alsa-lib`) benötigt.
 
 ## Neue Version veröffentlichen
 
-1. `version` in `Cargo.toml` erhöhen (z.B. `0.1.0` → `0.1.1`)
-2. Committen und pushen
-3. Tag setzen: `git tag v0.1.1 && git push origin v0.1.1`
+```
+scripts/release.sh
+```
 
-GitHub Actions baut dann die `laermampel.exe` und legt das Release an.
-Der Tag muss zur Version in `Cargo.toml` passen, sonst bricht der Build ab.
+Das Skript zählt die letzte Stelle der Version hoch, committet, setzt den Tag und pusht.
+GitHub Actions baut dann Installer und `laermampel.exe` und legt das Release an.
+
+Versionsschema: nur die letzte Stelle wird erhöht (`0.3.1`, `0.3.2` …).
+Nach `.99` geht es mit der mittleren Stelle weiter: `0.3.99` → `0.4.0`.
+Der Build prüft, dass der Tag zur Version in `Cargo.toml` passt und die letzte Stelle nicht über 99 liegt.
