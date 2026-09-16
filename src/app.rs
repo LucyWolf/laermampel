@@ -11,6 +11,7 @@ use crate::instance;
 use crate::level::{Calibration, Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
 use crate::settings::{self, DisplayMode, Settings};
+use crate::strip;
 use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
 
@@ -26,6 +27,18 @@ const MONITOR_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const REASSERT_INTERVAL: Duration = Duration::from_secs(1);
 
 const PREVIEW_DURATION: Duration = Duration::from_secs(3);
+
+/// Gate-Knopf 1 bis 10 → Schwelle -75 bis -30 dB.
+fn gate_threshold_db(knob: f32) -> f32 {
+    -80.0 + knob * 5.0
+}
+
+/// Comp-Knopf 1 bis 10 → höchstens 2 bis 20 dB lauter bzw. leiser.
+fn comp_range_db(knob: f32) -> f32 {
+    knob * 2.0
+}
+
+const KNOB_OFF: f32 = 0.05;
 
 const RED_TEXT: Color32 = Color32::from_rgb(235, 90, 90);
 
@@ -123,7 +136,8 @@ impl LaermampelApp {
     fn restart_meter(&mut self) {
         self.meter = None;
         self.last_retry = Instant::now();
-        let voice_setup = self.voice_output_wanted().then(|| VoiceSetup {
+        // Der Kanalzug gibt immer auf VB-Cable aus, sofern vorhanden.
+        let voice_setup = Some(VoiceSetup {
             output_id: self.settings.agc_output_id.clone(),
             params: Arc::clone(&self.agc_params),
         });
@@ -136,24 +150,21 @@ impl LaermampelApp {
         }
     }
 
-    /// Braucht irgendeine Funktion die Ausgabe auf VB-Cable?
-    fn voice_output_wanted(&self) -> bool {
-        self.settings.gate_enabled || self.settings.agc_enabled
-    }
-
     fn sync_agc_params(&self) {
         use std::sync::atomic::Ordering;
         let (s, p) = (&self.settings, &self.agc_params);
-        p.gate_enabled.store(s.gate_enabled, Ordering::Relaxed);
-        p.gate_threshold_db.set(s.gate_threshold_db);
+        p.gate_enabled.store(s.gate_knob > KNOB_OFF, Ordering::Relaxed);
+        p.gate_threshold_db.set(gate_threshold_db(s.gate_knob));
         p.gate_range_db.set(s.gate_range_db);
         p.gate_attack_ms.set(s.gate_attack_ms);
         p.gate_hold_ms.set(s.gate_hold_ms);
         p.gate_release_ms.set(s.gate_release_ms);
-        p.agc_enabled.store(s.agc_enabled, Ordering::Relaxed);
+        p.agc_enabled.store(s.comp_knob > KNOB_OFF, Ordering::Relaxed);
+        p.max_gain_db.set(comp_range_db(s.comp_knob));
+        p.max_cut_db.set(comp_range_db(s.comp_knob));
+        p.fader_db.set(s.fader_db);
+        p.muted.store(s.mic_muted, Ordering::Relaxed);
         p.target_db.set(s.agc_target_db);
-        p.max_gain_db.set(s.agc_max_gain_db);
-        p.max_cut_db.set(s.agc_max_cut_db);
         p.attack_ms.set(s.agc_attack_ms);
         p.release_ms.set(s.agc_release_ms);
         p.gate_db.set(s.agc_gate_db);
@@ -254,12 +265,20 @@ impl LaermampelApp {
         let brightness = self.zone_brightness(zone);
         let tint = zone_color(zone).gamma_multiply(brightness);
 
+        // Stumm soll man immer sehen, auch wenn Grün ausgeblendet ist.
+        let muted = self.settings.mic_muted;
+        let mute_ring = Stroke::new(2.5, Color32::from_rgb(220, 40, 40));
+
         match self.settings.display {
             DisplayMode::Dot => {
+                let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
+                if muted {
+                    painter.circle(rect.center(), radius, Color32::from_gray(90), mute_ring);
+                    return;
+                }
                 if brightness <= 0.01 {
                     return;
                 }
-                let radius = rect.width().min(rect.height()) / 2.0 - 1.0;
                 // Dunkler Rand, damit der Punkt auch vor hellem Hintergrund zu sehen ist.
                 let outline = Color32::from_black_alpha((160.0 * brightness) as u8);
                 painter.circle(rect.center(), radius, tint, Stroke::new(1.5, outline));
@@ -267,6 +286,9 @@ impl LaermampelApp {
             DisplayMode::Bar => {
                 painter.rect_filled(rect, CornerRadius::same(8), tint);
                 self.draw_level_bar(painter, rect.shrink(7.0));
+                if muted {
+                    painter.rect_stroke(rect.shrink(1.5), CornerRadius::same(8), mute_ring, egui::StrokeKind::Inside);
+                }
             }
         }
     }
@@ -457,26 +479,78 @@ impl LaermampelApp {
         ui.label(format!("Aktuell: {:.1} dB", self.level.display_db));
     }
 
-    fn agc_ui(&mut self, ui: &mut egui::Ui) {
+    fn strip_ui(&mut self, ui: &mut egui::Ui) {
+        use std::sync::atomic::Ordering;
+
         ui.heading("Mikrofon für andere Programme");
-        ui.label("Bearbeitet dein Mikrofon für Discord, Spiele usw. Braucht VB-Cable.");
+        let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
+        let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
+        let device_name = match &self.settings.device_id {
+            None => "Standardgerät".to_string(),
+            Some(id) => self.devices.iter().find(|d| &d.id == id).map(|d| d.name.clone()).unwrap_or_default(),
+        };
 
-        let was_wanted = self.voice_output_wanted();
-        ui.checkbox(&mut self.settings.gate_enabled, "Noise Gate")
-            .on_hover_text("Unter der Schwelle wird das Mikrofon leise, z.B. Tastatur und Lüfter in Sprechpausen");
-        ui.checkbox(&mut self.settings.agc_enabled, "Automatische Lautstärke")
-            .on_hover_text("Hebt leise Sprache an und regelt laute runter");
-        // Filter und Lautstärke schalten live um, nur die Ausgabe selbst braucht einen Neustart.
-        let mut restart = was_wanted != self.voice_output_wanted();
+        let p = Arc::clone(&self.agc_params);
+        let running = output_name.is_some();
+        let gate_open = running && p.gate_open.load(Ordering::Relaxed) && self.settings.gate_knob > KNOB_OFF;
 
-        if self.voice_output_wanted() {
-            let active = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
-            let error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
+        egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
+            ui.set_width(190.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
+                ui.label(egui::RichText::new(device_name).small().weak());
+            });
+            ui.add_space(6.0);
+
+            let s = &mut self.settings;
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                strip::knob(ui, &mut s.comp_knob, 10.0, "Comp.", false).on_hover_text(if s.comp_knob > KNOB_OFF {
+                    format!(
+                        "Automatische Lautstärke: bis ±{:.0} dB, gerade {:+.1} dB",
+                        comp_range_db(s.comp_knob),
+                        p.current_gain_db.get()
+                    )
+                } else {
+                    "Automatische Lautstärke: aus".to_string()
+                });
+                strip::knob(ui, &mut s.gate_knob, 10.0, "Gate", gate_open).on_hover_text(if s.gate_knob > KNOB_OFF {
+                    format!(
+                        "Noise Gate: Schwelle {:.0} dB, Mikrofon gerade {:.0} dB",
+                        gate_threshold_db(s.gate_knob),
+                        p.gate_level_db.get()
+                    )
+                } else {
+                    "Noise Gate: aus".to_string()
+                });
+            });
+            ui.add_space(6.0);
 
             ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                let (level, peak) = if running { (p.out_level_db.get(), p.out_peak_db.get()) } else { (-120.0, -120.0) };
+                strip::level_meter(ui, level, peak, 230.0);
+                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
+                ui.vertical(|ui| {
+                    ui.add_space(190.0);
+                    strip::mute_button(ui, &mut s.mic_muted);
+                });
+            });
+        });
+
+        if let Some(err) = output_error {
+            ui.colored_label(RED_TEXT, err);
+            ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
+        } else if running {
+            ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
+        }
+
+        let mut restart = false;
+        egui::CollapsingHeader::new("Details").id_salt("strip_details").show(ui, |ui| {
+            ui.horizontal(|ui| {
                 ui.label("Ausgabe");
-                let selected = active.clone().unwrap_or_else(|| "–".to_string());
-                egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(240.0).show_ui(ui, |ui| {
+                let selected = output_name.clone().unwrap_or_else(|| "–".to_string());
+                egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(220.0).show_ui(ui, |ui| {
                     if ui.selectable_label(self.settings.agc_output_id.is_none(), "VB-Cable automatisch").clicked() {
                         self.settings.agc_output_id = None;
                         restart = true;
@@ -495,77 +569,32 @@ impl LaermampelApp {
                 }
             });
 
-            if let Some(err) = error {
-                ui.colored_label(RED_TEXT, err);
-                ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
-            } else if active.is_some() {
-                ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
-                let gain = self.agc_params.current_gain_db.get();
-                if self.settings.agc_enabled {
-                    ui.label(format!("Aktuelle Anpassung: {gain:+.1} dB"));
-                }
-            }
-        }
-
-        if self.settings.gate_enabled {
-            self.gate_ui(ui);
-        }
-
-        if self.settings.agc_enabled {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Automatische Lautstärke").strong());
             let s = &mut self.settings;
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Gate").strong());
+            ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text("Absenkung").suffix(" dB"))
+                .on_hover_text("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.");
+            ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text("Öffnen").suffix(" ms"));
+            ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text("Halten").suffix(" ms"))
+                .on_hover_text("So lange bleibt es nach dem letzten Wort offen.");
+            ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
+
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Comp.").strong());
             ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
-            ui.add(egui::Slider::new(&mut s.agc_max_gain_db, 0.0..=30.0).text("Höchstens lauter").suffix(" dB"));
-            ui.add(egui::Slider::new(&mut s.agc_max_cut_db, 0.0..=30.0).text("Höchstens leiser").suffix(" dB"));
             ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
             ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text("Hochregeln").suffix(" ms"));
             ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
                 .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
-            ui.add(egui::Slider::new(&mut s.agc_ceiling_db, -12.0..=0.0).text("Limiter bei").suffix(" dB"));
-        }
+
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Limiter").strong());
+            ui.add(egui::Slider::new(&mut s.agc_ceiling_db, -12.0..=0.0).text("Obergrenze").suffix(" dB"));
+        });
 
         if restart {
             self.restart_meter();
         }
-    }
-
-    fn gate_ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Noise Gate").strong());
-
-        // Live-Pegel mit Schwelle, damit man die Schwelle direkt passend setzen kann.
-        let running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
-        let level = self.agc_params.gate_level_db.get();
-        let open = self.agc_params.gate_open.load(std::sync::atomic::Ordering::Relaxed);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
-        let to_x = |db: f32| rect.left() + ((db - -80.0) / 80.0).clamp(0.0, 1.0) * rect.width();
-        let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(4), Color32::from_black_alpha(140));
-        if running {
-            let color = if open { zone_color(Zone::Green) } else { Color32::from_gray(110) };
-            let fill = Rect::from_min_max(rect.min, Pos2::new(to_x(level), rect.max.y));
-            painter.rect_filled(fill, CornerRadius::same(4), color);
-        }
-        let x = to_x(self.settings.gate_threshold_db);
-        painter.line_segment(
-            [Pos2::new(x, rect.top() - 2.0), Pos2::new(x, rect.bottom() + 2.0)],
-            Stroke::new(2.0, Color32::WHITE),
-        );
-        if running {
-            let state = if open { "offen" } else { "zu" };
-            ui.label(format!("Pegel: {level:.1} dB · Gate {state}"));
-        }
-
-        let s = &mut self.settings;
-        ui.add(egui::Slider::new(&mut s.gate_threshold_db, -80.0..=-10.0).text("Schwelle").suffix(" dB"))
-            .on_hover_text("Darüber geht das Gate auf. Knapp über dein Hintergrundgeräusch setzen, unter deine leise Stimme.");
-        ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text("Absenkung").suffix(" dB"))
-            .on_hover_text("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.");
-        ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text("Öffnen").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text("Halten").suffix(" ms"))
-            .on_hover_text("So lange bleibt es nach dem letzten Wort offen, damit Wortenden nicht abgeschnitten werden.");
-        ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
     }
 
     fn calibration_ui(&mut self, ui: &mut egui::Ui) {
@@ -592,7 +621,7 @@ impl LaermampelApp {
         ui.separator();
         self.microphone_ui(ui);
         ui.separator();
-        self.agc_ui(ui);
+        self.strip_ui(ui);
         ui.separator();
         self.calibration_ui(ui);
         ui.separator();
@@ -687,6 +716,7 @@ impl eframe::App for LaermampelApp {
         for action in actions {
             match action {
                 TrayAction::OpenSettings => self.open_settings(),
+                TrayAction::ToggleMute => self.settings.mic_muted = !self.settings.mic_muted,
                 TrayAction::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
             }
         }
@@ -695,7 +725,7 @@ impl eframe::App for LaermampelApp {
         }
         let zone = self.shown_zone();
         if let Some(tray) = &mut self.tray {
-            tray.set_zone(zone);
+            tray.set_state(zone, self.settings.mic_muted);
         }
 
         if matches!(self.updater.status(), Status::Installed(_)) {

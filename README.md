@@ -11,7 +11,7 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 - Symbol im Infobereich neben der Uhr, zeigt ebenfalls die Ampelfarbe
 - Liest das Mikrofon parallel zu Discord und Co., nimmt nichts weg
 - Updates mit einem Klick
-- Mikrofon für alle Programme verbessern (über VB-Cable): Noise Gate und automatische Lautstärke
+- Kanalzug fürs Mikrofon wie im Mischpult (über VB-Cable): Comp., Gate, Gain-Fader, Pegelanzeige, Mute
 
 ## Installation
 
@@ -32,20 +32,24 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
   der Installer läuft ohne Rückfragen durch und startet die Lärmampel danach neu.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
 
-### Noise Gate und automatische Lautstärke
+### Kanalzug: Comp., Gate, Gain, Mute
 
-Beides bearbeitet nur dein Mikrofon, nicht das, was du hörst.
+Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
-- **Noise Gate:** unter einer einstellbaren Schwelle wird das Mikrofon leiser oder stumm, z.B. Tastatur und Lüfter in Sprechpausen.
-  Einstellbar: Schwelle (mit Live-Pegel), Absenkung, Öffnen, Halten, Schließen.
-- **Automatische Lautstärke:** hebt leise Sprache an, regelt laute runter, Limiter gegen Übersteuern.
+- **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
+- **Gate** (0–10): unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. 0 = aus, höher = höhere Schwelle. Die Lampe am Knopf zeigt, ob es gerade offen ist.
+- **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
+- **Pegelanzeige:** so laut, wie andere dich hören.
+- **Mute:** Mikrofon für andere stumm. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
+- Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen unter „Details“.
 
-1. [VB-Cable](https://vb-audio.com/Cable/) installieren (kostenlos, braucht Adminrechte und einen Neustart).
-2. In der Lärmampel unter Einstellungen → Mikrofon für andere Programme das Gewünschte einschalten. VB-Cable wird von selbst gefunden.
-3. In Discord, Spielen, OBS usw. als Mikrofon **„CABLE Output“** auswählen.
+Einrichten:
+
+1. [VB-Cable](https://vb-audio.com/Cable/) installieren (kostenlos, braucht Adminrechte und einen Neustart). Die Lärmampel findet es von selbst.
+2. In Discord, Spielen, OBS usw. als Mikrofon **„CABLE Output“** auswählen.
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
-Die Ampel misst weiterhin vor der Regelung, zeigt also, wie laut du wirklich sprichst.
+Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
 Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.json`.
 
