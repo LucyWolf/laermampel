@@ -7,7 +7,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::HeapRb;
 use ringbuf::traits::Split;
 
-use crate::agc::{self, AgcParams, CHAIN_RATE, VoiceChain};
+use crate::agc::{self, AgcParams, VoiceChain};
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
 const BLOCK_SECONDS: f32 = 0.02;
@@ -122,8 +122,8 @@ impl Meter {
         let mut agc_error = None;
         let mut chain = None;
         if let Some(setup) = voice_setup {
-            let (producer, consumer) = HeapRb::<f32>::new(CHAIN_RATE as usize).split();
-            match agc::start_output(setup.output_id.as_deref(), consumer, CHAIN_RATE, Arc::clone(&fault)) {
+            let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
+            match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&fault)) {
                 Ok((stream, name)) => {
                     output = Some(stream);
                     agc_output_name = Some(name);

@@ -43,7 +43,14 @@ pub struct Settings {
     pub beep_volume: f32,
 
     /// Mikrofon für andere Programme über VB-Cable.
-    pub noise_filter_enabled: bool,
+    pub gate_enabled: bool,
+    /// Ab diesem Pegel (dBFS) öffnet das Gate.
+    pub gate_threshold_db: f32,
+    /// Wie viel leiser im geschlossenen Zustand, 80 = praktisch stumm.
+    pub gate_range_db: f32,
+    pub gate_attack_ms: f32,
+    pub gate_hold_ms: f32,
+    pub gate_release_ms: f32,
     pub agc_enabled: bool,
     pub agc_output_id: Option<String>,
     /// Ziel-Sprachpegel in dBFS (RMS).
@@ -80,7 +87,12 @@ impl Default for Settings {
             bar_width: 240.0,
             beep_enabled: false,
             beep_volume: 0.3,
-            noise_filter_enabled: false,
+            gate_enabled: false,
+            gate_threshold_db: -45.0,
+            gate_range_db: 40.0,
+            gate_attack_ms: 2.0,
+            gate_hold_ms: 250.0,
+            gate_release_ms: 150.0,
             agc_enabled: false,
             agc_output_id: None,
             agc_target_db: -20.0,
