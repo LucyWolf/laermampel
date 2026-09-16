@@ -299,16 +299,27 @@ impl LaermampelApp {
                 });
             }
             Status::Installed(release) => {
-                ui.label(format!("v{} ist installiert.", release.version));
-                if ui.button("Jetzt neu starten").clicked() {
-                    settings::save(&self.settings);
-                    self.saved = self.settings.clone();
-                    match updater::restart() {
-                        Ok(()) => ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close),
-                        Err(e) => self.updater.fail(format!("Neustart fehlgeschlagen: {e}")),
-                    }
-                }
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("v{} installiert, starte neu …", release.version));
+                });
             }
+        }
+    }
+
+    /// Beendet diesen Prozess sofort und startet die frisch installierte Version.
+    fn restart_into_update(&mut self) {
+        settings::save(&self.settings);
+        self.saved = self.settings.clone();
+        match updater::spawn_new_version() {
+            Ok(()) => {
+                // Symbol im Infobereich sauber entfernen, sonst bleibt ein Geist-Symbol stehen.
+                self.tray = None;
+                // Nicht auf das normale Schließen verlassen: die neue Version wartet auf
+                // diesen Prozess und soll nicht hängen bleiben.
+                std::process::exit(0);
+            }
+            Err(e) => self.updater.fail(format!("Neustart fehlgeschlagen: {e}. Bitte Lärmampel von Hand starten.")),
         }
     }
 
@@ -526,6 +537,10 @@ impl eframe::App for LaermampelApp {
         let zone = self.shown_zone();
         if let Some(tray) = &mut self.tray {
             tray.set_zone(zone);
+        }
+
+        if matches!(self.updater.status(), Status::Installed(_)) {
+            self.restart_into_update();
         }
 
         self.update_placement(ctx, frame);
