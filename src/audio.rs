@@ -39,6 +39,10 @@ impl Fault {
     }
 }
 
+pub fn device_name(device: &cpal::Device) -> String {
+    device.description().map(|d| d.name().to_string()).unwrap_or_default()
+}
+
 /// Verständliche Fehlermeldung, bei den typischen Windows-Ursachen mit Lösung.
 pub fn describe(err: &cpal::Error) -> String {
     match err.kind() {
@@ -102,11 +106,24 @@ impl Meter {
     /// Startet die Aufnahme. Ist `device_id` unbekannt, wird das Standardmikrofon genommen.
     pub fn start(device_id: Option<&str>, voice_setup: Option<VoiceSetup>) -> Result<Meter, String> {
         let host = cpal::default_host();
-        let device = device_id
-            .and_then(|s| s.parse::<cpal::DeviceId>().ok())
-            .and_then(|id| host.device_by_id(&id))
+        let chosen = device_id.and_then(|s| s.parse::<cpal::DeviceId>().ok()).and_then(|id| host.device_by_id(&id));
+        let explicitly_chosen = chosen.is_some();
+        let mut device = chosen
             .or_else(|| host.default_input_device())
             .ok_or_else(|| "Kein Mikrofon gefunden".to_string())?;
+
+        // Ist in Windows „CABLE Output“ das Standard-Mikrofon, würde die Lärmampel ihre eigene
+        // Ausgabe wieder aufnehmen: Rückkopplung. Dann lieber das erste echte Mikrofon nehmen.
+        if !explicitly_chosen && agc::is_virtual_device(&device_name(&device)) {
+            if let Some(real) = host
+                .input_devices()
+                .ok()
+                .and_then(|mut all| all.find(|d| !agc::is_virtual_device(&device_name(d))))
+            {
+                device = real;
+            }
+        }
+        let input_is_virtual = agc::is_virtual_device(&device_name(&device));
 
         let config = device
             .default_input_config()
@@ -121,7 +138,13 @@ impl Meter {
         let mut agc_output_name = None;
         let mut agc_error = None;
         let mut chain = None;
-        if let Some(setup) = voice_setup {
+        if voice_setup.is_some() && input_is_virtual {
+            agc_error = Some(format!(
+                "Als Mikrofon ist „{}“ gewählt, also VB-Cable selbst. Das gäbe eine Rückkopplung, \
+                 deshalb ist der Kanalzug aus. Bitte oben dein echtes Mikrofon auswählen.",
+                device_name(&device)
+            ));
+        } else if let Some(setup) = voice_setup {
             let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
             match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&fault)) {
                 Ok((stream, name)) => {

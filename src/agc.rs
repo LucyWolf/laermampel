@@ -83,6 +83,12 @@ pub struct AgcParams {
     pub current_gain_db: AtomicF32,
 }
 
+/// VB-Cable, Voicemeeter und ähnliche virtuelle Geräte.
+pub fn is_virtual_device(name: &str) -> bool {
+    let name = name.to_lowercase();
+    ["vb-audio", "cable", "voicemeeter", "virtual"].iter().any(|hint| name.contains(hint))
+}
+
 pub fn list_output_devices() -> Vec<InputDevice> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
@@ -376,6 +382,13 @@ pub fn start_output(
     .ok_or_else(|| "VB-Cable nicht gefunden. Bitte installieren oder ein Ausgabegerät wählen.".to_string())?;
 
     let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Ausgabe".to_string());
+    // Auf Kopfhörer oder Lautsprecher würde das Mikrofon direkt zurückgespielt.
+    if !is_virtual_device(&name) {
+        return Err(format!(
+            "„{name}“ ist kein virtuelles Gerät. Dort würdest du dich selbst hören \
+             (bei Lautsprechern gibt es eine Rückkopplung). Bitte VB-Cable als Ausgabe wählen."
+        ));
+    }
     let config = device
         .default_output_config()
         .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))?;
@@ -603,6 +616,15 @@ mod tests {
 
     fn through_gate(gate: &mut Gate, input: &[f32]) -> Vec<f32> {
         input.iter().map(|&x| gate.process(x)).collect()
+    }
+
+    #[test]
+    fn virtuelle_geraete_werden_erkannt() {
+        assert!(is_virtual_device("CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(is_virtual_device("CABLE Input (VB-Audio Virtual Cable)"));
+        assert!(is_virtual_device("VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)"));
+        assert!(!is_virtual_device("Headset Microphone (Arctis 7 Chat)"));
+        assert!(!is_virtual_device("Lautsprecher (Realtek(R) Audio)"));
     }
 
     #[test]
