@@ -179,8 +179,7 @@ impl LaermampelApp {
     fn restart_meter(&mut self) {
         self.meter = None;
         self.last_retry = Instant::now();
-        // Der Kanalzug gibt immer auf VB-Cable aus, sofern vorhanden.
-        let voice_setup = Some(VoiceSetup {
+        let voice_setup = (!self.settings.output_off).then(|| VoiceSetup {
             output_id: self.settings.agc_output_id.clone(),
             control: Arc::clone(&self.chain_control),
         });
@@ -750,6 +749,8 @@ impl LaermampelApp {
             let reading = if voice_db > -99.5 { format!("Pegel {voice_db:.0} dB") } else { "Pegel –".to_string() };
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)));
 
+            self.output_picker_ui(ui);
+
             if nothing_processes {
                 let verb = if needs_cable.len() == 1 { "wirkt" } else { "wirken" };
                 let text = format!("⚠ {} {verb} nur mit VB-Cable", needs_cable.join(", "));
@@ -785,6 +786,70 @@ impl LaermampelApp {
     }
 
     /// Ausgabe, Hinweise zu VB-Cable und die Feineinstellungen des Kanalzugs.
+    /// Ausgang im Kanalzug wählen: aus, automatisch VB-Cable, oder ein virtuelles Gerät.
+    fn output_picker_ui(&mut self, ui: &mut egui::Ui) {
+        let active_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
+        let missing = self.meter.as_ref().and_then(|m| m.agc_error.as_deref()) == Some(agc::VB_CABLE_MISSING);
+        let current = if self.settings.output_off {
+            "aus".to_string()
+        } else if let Some(name) = active_name {
+            name
+        } else if missing {
+            "kein virtuelles Gerät".to_string()
+        } else {
+            "–".to_string()
+        };
+
+        let devices = self.output_devices.clone();
+        let (off, chosen) = (self.settings.output_off, self.settings.agc_output_id.clone());
+        let mut pick: Option<(bool, Option<String>)> = None;
+        let mut refresh = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(egui::RichText::new("Ausgang").small().color(Color32::from_rgb(170, 176, 186)));
+            let text = egui::RichText::new(format!("{current} ▾")).small();
+            let menu = ui.menu_button(text, |ui| {
+                if ui.selectable_label(off, "Aus").clicked() {
+                    pick = Some((true, None));
+                    ui.close();
+                }
+                if ui.selectable_label(!off && chosen.is_none(), "Automatisch (VB-Cable)").clicked() {
+                    pick = Some((false, None));
+                    ui.close();
+                }
+                if devices.is_empty() {
+                    ui.separator();
+                    ui.label("Kein virtuelles Gerät gefunden.");
+                    ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
+                } else {
+                    ui.separator();
+                    for d in &devices {
+                        let active = !off && chosen.as_deref() == Some(d.id.as_str());
+                        if ui.selectable_label(active, &d.name).clicked() {
+                            pick = Some((false, Some(d.id.clone())));
+                            ui.close();
+                        }
+                    }
+                }
+            });
+            if menu.response.clicked() {
+                refresh = true;
+            }
+            menu.response.on_hover_text(
+                "Wohin das bearbeitete Mikrofon geht. In Discord usw. dann das passende Gegenstück als Mikrofon \
+                 wählen, bei VB-Cable „CABLE Output“. Kopfhörer und Lautsprecher stehen nicht zur Wahl (Rückkopplung).",
+            );
+        });
+        if refresh {
+            self.output_devices = agc::list_output_devices();
+        }
+        if let Some((output_off, output_id)) = pick {
+            self.settings.output_off = output_off;
+            self.settings.agc_output_id = output_id;
+            self.restart_meter();
+        }
+    }
+
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
@@ -799,30 +864,6 @@ impl LaermampelApp {
         } else if output_name.is_some() {
             ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
         }
-
-        let mut restart = false;
-
-        ui.horizontal(|ui| {
-            ui.label("Ausgabe");
-            let selected = output_name.clone().unwrap_or_else(|| "–".to_string());
-            egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(220.0).show_ui(ui, |ui| {
-                if ui.selectable_label(self.settings.agc_output_id.is_none(), "VB-Cable automatisch").clicked() {
-                    self.settings.agc_output_id = None;
-                    restart = true;
-                }
-                for d in &self.output_devices {
-                    let chosen = self.settings.agc_output_id.as_deref() == Some(d.id.as_str());
-                    if ui.selectable_label(chosen, &d.name).clicked() {
-                        self.settings.agc_output_id = Some(d.id.clone());
-                        restart = true;
-                    }
-                }
-            });
-            if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
-                self.output_devices = agc::list_output_devices();
-                restart = true;
-            }
-        });
 
         let s = &mut self.settings;
         ui.add_space(6.0);
@@ -858,9 +899,6 @@ impl LaermampelApp {
 
 
 
-        if restart {
-            self.restart_meter();
-        }
     }
 
     /// Nur sichtbar, wenn aus einer älteren Version noch ein Audio-Filter eingetragen ist.
