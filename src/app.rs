@@ -13,15 +13,16 @@ use crate::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
 use crate::instance;
 use crate::level::{Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
-use crate::settings::{self, DisplayMode, Settings};
+use crate::settings::{self, DenoiseLevel, DisplayMode, Settings};
 use crate::spectrum::Spectrum;
 use crate::strip;
 use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
 use crate::volume_gate::{GateParams, VolumeGate};
 
-/// Anzeigebereich des Pegelbalkens in dBFS.
-const BAR_MIN_DB: f32 = -60.0;
+/// Anzeigebereich des Pegelbalkens in dBFS. Derselbe wie im Kanalzug: sonst steht dieselbe
+/// Stimme in den beiden Anzeigen an ganz verschiedenen Stellen.
+const BAR_MIN_DB: f32 = strip::METER_MIN_DB;
 const BAR_MAX_DB: f32 = 0.0;
 const BAR_HEIGHT: f32 = 28.0;
 
@@ -240,6 +241,7 @@ impl LaermampelApp {
         let s = &self.settings;
         ChainSettings {
             denoise: self.denoise_active(),
+            denoise_dry: self.settings.denoise_level.dry(),
             gate: GateSettings {
                 enabled: gate_on(s),
                 threshold_db: s.gate_threshold_db,
@@ -356,6 +358,8 @@ impl LaermampelApp {
 
     fn draw_indicator(&self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
+        // Gilt für alles, was gleich gezeichnet wird.
+        ui.set_opacity(self.settings.opacity.clamp(0.05, 1.0));
         let painter = ui.painter();
         let zone = self.shown_zone();
         let brightness = self.zone_brightness(zone);
@@ -570,6 +574,12 @@ impl LaermampelApp {
         ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
         ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
         ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
+        ui.add(
+            egui::Slider::new(&mut s.opacity, 0.05..=1.0)
+                .text("Deckkraft")
+                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
+        )
+        .on_hover_text("Ganz rechts deckt die Anzeige voll, nach links wird sie durchsichtig.");
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -780,9 +790,13 @@ impl LaermampelApp {
                     let mut noise_open = self.noise_window_open || filtering;
                     strip::toggle_button(ui, &mut noise_open, "Rausch", color)
                         .on_hover_text(match (filtering, rate_48k) {
-                            (true, _) => "Rauschfilter läuft. Klick öffnet das Fenster mit Diagramm und Profil.",
-                            (false, true) => "Öffnet „Rauschen“: Filter einschalten, Frequenz-Diagramm, Rauschprofil.",
-                            (false, false) => "Öffnet „Rauschen“. Der Filter selbst braucht ein Mikrofon mit 48 kHz.",
+                            (true, _) => {
+                                format!("Rauschfilter läuft, Stufe {}. Klick öffnet das Fenster.", s.denoise_level.label())
+                            }
+                            (false, true) => {
+                                "Öffnet „Rauschen“: Filter einschalten (3 Stufen), Diagramm, Rauschprofil.".to_string()
+                            }
+                            (false, false) => "Öffnet „Rauschen“. Der Filter braucht ein Mikrofon mit 48 kHz.".to_string(),
                         })
                         .clicked()
                         .then(|| {
@@ -926,9 +940,35 @@ impl LaermampelApp {
         ui.heading("Rauschen");
 
         let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
+        // Aus und die drei Stufen in einer Reihe: ein Klick schaltet ein und stellt zugleich ein,
+        // wie viel der Filter wegnehmen darf.
         ui.add_enabled_ui(rate_48k, |ui| {
-            ui.checkbox(&mut self.settings.denoise, "Rauschfilter (RNNoise)").on_hover_text(
-                "Entfernt Tastatur, Lüfter und Brummen. Wirkt über den Ausgang (VB-Cable) und kostet 10 ms.",
+            let s = &mut self.settings;
+            ui.horizontal(|ui| {
+                ui.label("Rauschfilter");
+                if ui
+                    .selectable_label(!s.denoise, "Aus")
+                    .on_hover_text("Das Mikrofon geht unbearbeitet durch.")
+                    .clicked()
+                {
+                    s.denoise = false;
+                }
+                for level in DenoiseLevel::ALL {
+                    let active = s.denoise && s.denoise_level == level;
+                    if ui.selectable_label(active, level.label()).on_hover_text(level.hint()).clicked() {
+                        s.denoise = true;
+                        s.denoise_level = level;
+                    }
+                }
+            });
+            ui.label(
+                egui::RichText::new(if s.denoise {
+                    s.denoise_level.hint()
+                } else {
+                    "KI-Filter (RNNoise) gegen Tastatur, Lüfter und Brummen. Wirkt über den Ausgang und kostet 10 ms."
+                })
+                .small()
+                .weak(),
             );
         });
         if !rate_48k {

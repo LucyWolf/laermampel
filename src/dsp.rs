@@ -54,6 +54,10 @@ pub struct CompSettings {
 pub struct Settings {
     /// Rauschfilter (RNNoise). Braucht 48 kHz, sonst wird er übersprungen.
     pub denoise: bool,
+    /// Wie viel vom ungefilterten Ton stehen bleibt (0 = voll gefiltert, 0.32 = höchstens
+    /// 10 dB leiser). Damit gibt es Stufen: etwas Restrauschen klingt natürlicher als ein
+    /// Filter, der in Sprechpausen alles totmacht.
+    pub denoise_dry: f32,
     pub gate: GateSettings,
     pub comp: CompSettings,
     pub fader_db: f32,
@@ -67,6 +71,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             denoise: false,
+            denoise_dry: 0.0,
             gate: GateSettings { enabled: false, threshold_db: -45.0, range_db: 40.0, attack_ms: 2.0, hold_ms: 250.0, release_ms: 150.0 },
             comp: CompSettings {
                 enabled: false,
@@ -251,6 +256,9 @@ struct Denoiser {
     output: Vec<f32>,
     /// Fertige, noch nicht abgeholte Samples.
     ready: std::collections::VecDeque<f32>,
+    /// Das unbearbeitete Signal, um dieselben 10 ms verzögert wie das gefilterte.
+    /// Ohne diese Verzögerung würde das Beimischen den Ton verschmieren.
+    dry: std::collections::VecDeque<f32>,
 }
 
 impl Denoiser {
@@ -261,6 +269,7 @@ impl Denoiser {
             input: Vec::with_capacity(frame),
             output: vec![0.0; frame],
             ready: std::collections::VecDeque::with_capacity(frame * 2),
+            dry: std::collections::VecDeque::with_capacity(frame * 2),
         }
     }
 
@@ -269,10 +278,12 @@ impl Denoiser {
     fn reset(&mut self) {
         self.input.clear();
         self.ready.clear();
+        self.dry.clear();
     }
 
     /// Ein Sample hinein, ein (verzögertes) Sample heraus.
-    fn process(&mut self, x: f32) -> f32 {
+    /// `dry_mix` ist der Anteil, der ungefiltert stehen bleibt (Stärke des Filters).
+    fn process(&mut self, x: f32, dry_mix: f32) -> f32 {
         self.input.push(x * 32768.0);
         if self.input.len() == nnnoiseless::DenoiseState::FRAME_SIZE {
             self.state.process_frame(&mut self.output, &self.input);
@@ -281,8 +292,17 @@ impl Denoiser {
                 self.ready.push_back(y / 32768.0);
             }
         }
+        self.dry.push_back(x);
         // Bis der erste Block fertig ist, kommt Stille heraus (10 ms).
-        self.ready.pop_front().unwrap_or(0.0)
+        let wet = self.ready.pop_front().unwrap_or(0.0);
+        let dry = if self.dry.len() > nnnoiseless::DenoiseState::FRAME_SIZE {
+            self.dry.pop_front().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        // Überblendung statt Addition: bei Sprache sind beide gleich, die Lautstärke
+        // bleibt also stehen; in Pausen bestimmt `dry_mix`, wie viel Rauschen übrig ist.
+        wet + (dry - wet) * dry_mix.clamp(0.0, 1.0)
     }
 }
 
@@ -352,7 +372,7 @@ impl Chain {
         if self.settings.denoise
             && let Some(denoiser) = &mut self.denoiser
         {
-            mono = denoiser.process(mono);
+            mono = denoiser.process(mono, self.settings.denoise_dry);
             frame.fill(mono);
         }
 
@@ -503,6 +523,25 @@ mod tests {
         let out = run(&mut chain, &input);
         let reduction = tail_rms(&input) - tail_rms(&out);
         assert!(reduction > 10.0, "nur {reduction:.1} dB leiser");
+    }
+
+    #[test]
+    fn rauschfilter_hat_drei_stufen() {
+        let weggenommen = |dry: f32| {
+            let mut chain = Chain::new(RATE);
+            let mut s = Settings::default();
+            s.denoise = true;
+            s.denoise_dry = dry;
+            chain.set(s);
+            let input = noise(RATE as usize * 3, 0.05);
+            let out = run(&mut chain, &input);
+            tail_rms(&input) - tail_rms(&out)
+        };
+        // Werte aus settings::DenoiseLevel: leicht, medium, stark.
+        let (leicht, medium, stark) = (weggenommen(0.32), weggenommen(0.10), weggenommen(0.0));
+        assert!(leicht < medium && medium < stark, "Stufen: {leicht:.1} / {medium:.1} / {stark:.1} dB");
+        assert!(leicht < 11.0, "„Leicht“ soll höchstens 10 dB wegnehmen, nimmt aber {leicht:.1} dB");
+        assert!(medium < 21.0, "„Medium“ soll höchstens 20 dB wegnehmen, nimmt aber {medium:.1} dB");
     }
 
     #[test]
