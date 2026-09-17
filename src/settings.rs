@@ -114,24 +114,101 @@ impl Default for Settings {
     }
 }
 
+/// Setzt jedes Feld zurück, das keine echte Zahl mehr ist.
+macro_rules! nur_echte_zahlen {
+    ($settings:ident, $default:ident, $($field:ident),* $(,)?) => {
+        $(if !$settings.$field.is_finite() {
+            $settings.$field = $default.$field;
+        })*
+    };
+}
+
+impl Settings {
+    /// NaN oder unendlich schreibt serde_json als `null`. Beim nächsten Start scheitert dann
+    /// das Einlesen der ganzen Datei – und alle Einstellungen wären weg. Also vorher gerade-
+    /// biegen, sowohl beim Speichern als auch beim Laden.
+    pub fn repair(&mut self) {
+        let d = Settings::default();
+        nur_echte_zahlen!(
+            self,
+            d,
+            yellow_db,
+            red_db,
+            attack_ms,
+            release_ms,
+            hold_ms,
+            brightness,
+            green_brightness,
+            margin,
+            dot_size,
+            bar_width,
+            beep_volume,
+            gate_threshold_db,
+            comp_knob,
+            fader_db,
+            gate_range_db,
+            gate_attack_ms,
+            gate_hold_ms,
+            gate_release_ms,
+            buffer_ms,
+            agc_target_db,
+            agc_attack_ms,
+            agc_release_ms,
+            agc_gate_db,
+            agc_ceiling_db,
+        );
+        if self.noise_profile.as_ref().is_some_and(|p| p.iter().any(|v| !v.is_finite())) {
+            self.noise_profile = None;
+        }
+    }
+}
+
 fn path() -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("de", "LucyWolf", "Laermampel")?;
     Some(dirs.config_dir().join("settings.json"))
 }
 
 pub fn load() -> Settings {
-    path()
+    let mut settings: Settings = path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    settings.repair();
+    settings
 }
 
 pub fn save(settings: &Settings) {
+    let mut settings = settings.clone();
+    settings.repair();
+    let settings = &settings;
     let Some(path) = path() else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kaputte_zahlen_kosten_nicht_alle_einstellungen() {
+        let mut settings = Settings { dot_size: f32::NAN, fader_db: f32::INFINITY, margin: 42.0, ..Settings::default() };
+        settings.noise_profile = Some(vec![-80.0, f32::NAN]);
+
+        settings.repair();
+
+        assert_eq!(settings.dot_size, Settings::default().dot_size);
+        assert_eq!(settings.fader_db, Settings::default().fader_db);
+        assert_eq!(settings.margin, 42.0, "gute Werte bleiben stehen");
+        assert!(settings.noise_profile.is_none(), "kaputtes Rauschprofil wird verworfen");
+
+        // Und die Datei lässt sich danach wieder einlesen.
+        let json = serde_json::to_string(&settings).unwrap();
+        let wieder: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(wieder.margin, 42.0);
     }
 }

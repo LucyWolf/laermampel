@@ -235,6 +235,9 @@ impl VolumeGate {
             {
                 self.original_db = current;
                 self.applied_db = current;
+                // Auch den Ausgangspunkt mitziehen: sonst schreibt `apply_reduction` unten noch
+                // im selben Bild den alten Wert zurück und die Änderung von Hand springt weg.
+                self.base_db = self.clamp_db(current + fader_db);
             }
         }
 
@@ -333,7 +336,10 @@ impl VolumeGate {
         }
         let wanted = self.base_db - asked;
         let target = self.clamp_db(wanted);
-        let back_to_start = self.reduction_db < MIN_STEP_DB && target != self.applied_db;
+        // Genau am Ende der Absenkung einmal exakt auf den Ausgangspunkt. Nur „praktisch null“,
+        // sonst wird der Regler beim Ausklingen jedes Bild um Zehntel-dB neu geschrieben – das
+        // bekommen auch alle anderen Programme als Lautstärke-Änderung mit.
+        let back_to_start = self.reduction_db < 0.05 && target != self.applied_db;
         if (target - self.applied_db).abs() >= MIN_STEP_DB || back_to_start {
             self.write_db(target);
             self.applied_db = target;
