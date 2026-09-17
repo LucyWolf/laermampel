@@ -148,6 +148,9 @@ enum MeterLine {
     Limit,
 }
 
+/// Breite der dB-Skala rechts neben dem Balken.
+const SCALE_WIDTH: f32 = 26.0;
+
 /// Breite des Randes links für die Pfeile. Bleibt immer frei, damit nichts springt.
 const ARROW_GUTTER: f32 = 12.0;
 
@@ -159,14 +162,16 @@ pub fn level_meter(
     ui: &mut Ui,
     voice_db: f32,
     muted: bool,
+    gate: Option<(f32, bool)>,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
 ) -> Response {
     // Ein Balken: ein Mikrofon ist mono.
-    let (rect, mut response) = ui.allocate_exact_size(vec2(34.0 + ARROW_GUTTER, height), Sense::click_and_drag());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(34.0 + ARROW_GUTTER + SCALE_WIDTH, height), Sense::click_and_drag());
     let gutter = Rect::from_min_max(rect.min, pos2(rect.left() + ARROW_GUTTER, rect.bottom()));
-    let meter = Rect::from_min_max(pos2(gutter.right(), rect.top()), rect.max);
+    let meter = Rect::from_min_max(pos2(gutter.right(), rect.top()), pos2(rect.right() - SCALE_WIDTH, rect.bottom()));
+    let scale = Rect::from_min_max(pos2(meter.right(), rect.top()), rect.max);
     let inner = meter.shrink(3.0);
     let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
     let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
@@ -251,6 +256,24 @@ pub fn level_meter(
 
     let painter = ui.painter();
     painter.rect_filled(meter, CornerRadius::same(3), TRACK);
+
+    // dB-Skala rechts neben dem Balken.
+    for db in [0.0, -10.0, -20.0, -30.0, -40.0, -60.0, -80.0, -100.0] {
+        let y = to_y(db);
+        painter.line_segment([pos2(scale.left() + 1.0, y), pos2(scale.left() + 4.0, y)], Stroke::new(1.0, LABEL));
+        painter.text(pos2(scale.left() + 6.0, y), Align2::LEFT_CENTER, format!("{db:.0}"), FontId::proportional(9.0), LABEL);
+    }
+    // Wo das Gate steht: kleines Dreieck an der Skala, grün wenn offen, grau wenn zu.
+    if let Some((threshold, open)) = gate {
+        let y = to_y(threshold);
+        let color = if open { ACCENT } else { Color32::from_gray(150) };
+        let x = scale.left() + 1.0;
+        painter.add(Shape::convex_polygon(
+            vec![pos2(x, y), pos2(x + 7.0, y - 4.5), pos2(x + 7.0, y + 4.5)],
+            color,
+            Stroke::new(1.0, Color32::from_black_alpha(160)),
+        ));
+    }
 
     const SEGMENTS: usize = 40;
     let segment_height = inner.height() / SEGMENTS as f32;
