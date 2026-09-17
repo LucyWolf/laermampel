@@ -1533,6 +1533,7 @@ dependencies = [
  "serde_json",
  "tray-icon",
  "ureq",
+ "windows",
  "windows-sys 0.61.2",
  "winresource",
 ]

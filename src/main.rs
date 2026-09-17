@@ -18,6 +18,7 @@ mod settings;
 mod strip;
 mod tray;
 mod updater;
+mod volume_gate;
 
 use std::time::Duration;
 

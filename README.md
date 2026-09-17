@@ -40,8 +40,9 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (0–10): unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. 0 = aus, höher = höhere Schwelle. Die Lampe am Knopf zeigt, ob es gerade offen ist.
+  Ohne Filter und VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows herunter (gilt für alle Programme, ohne Einrichten). Beim Beenden wird er zurückgestellt, nach einem Absturz beim nächsten Start.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
-- **Pegelanzeige:** ein Balken mit deiner Stimme (ein Mikrofon ist mono).
+- **Pegelanzeige:** ein Balken (ein Mikrofon ist mono). Zeigt, was nach Gate & Co. übrig bleibt; bei Mute grau deine Stimme.
   - Ist **Ton** an, gibt es eine **gelbe** und eine **rote** Linie mit Pfeil am Rand für die Ampel-Schwellen, zum Ziehen.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
