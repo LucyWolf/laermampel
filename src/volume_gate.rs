@@ -23,13 +23,22 @@ const MIN_STEP_DB: f32 = 0.5;
 const TEST_DIP_DB: f32 = 10.0;
 const TEST_SETTLE: Duration = Duration::from_millis(60);
 const TEST_LENGTH: Duration = Duration::from_millis(260);
+/// Unter diesem gemessenen Pegel hört die Lärmampel praktisch nichts mehr; dann wird die
+/// Absenkung zurückgenommen, damit sie merkt, wenn wieder gesprochen wird.
+const MEASURE_FLOOR_DB: f32 = -85.0;
+/// So viel Luft über der Messgrenze wird angestrebt, bevor wieder tiefer abgesenkt wird.
+const MEASURE_HEADROOM_DB: f32 = 10.0;
+/// Wie schnell die Absenkungsgrenze zurückgenommen bzw. wieder vergrößert wird (dB pro Sekunde).
+const CAP_DOWN_DB_PER_SECOND: f32 = 40.0;
+const CAP_UP_DB_PER_SECOND: f32 = 6.0;
+
 /// Steigt der gemessene Pegel bei geschlossenem Gate um so viel, geht es sofort auf.
 /// Das funktioniert ohne Schätzung, wie stark der Regler absenkt.
 const OPEN_JUMP_DB: f32 = 6.0;
 /// So lange nach dem Zugehen wird der Ruhepegel gemerkt.
 const BASELINE_AFTER: Duration = Duration::from_millis(250);
 /// Ist das Gate so lange zu, wird der Regler kurz geöffnet, um den echten Pegel zu messen.
-const RECHECK_AFTER: Duration = Duration::from_secs(15);
+const RECHECK_AFTER: Duration = Duration::from_secs(4);
 const RECHECK_LENGTH: Duration = Duration::from_millis(150);
 /// Bis zum ersten Test wird der Regler höchstens so weit gezogen, falls das Gerät viel stärker reagiert.
 const UNTESTED_MAX_DB: f32 = 10.0;
@@ -99,6 +108,8 @@ pub struct VolumeGate {
     closed_baseline_db: Option<f32>,
     /// Läuft gerade das kurze Nachsehen mit offenem Regler?
     recheck_until: Option<Instant>,
+    /// So weit darf höchstens abgesenkt werden, damit die Messung noch etwas hört.
+    reduction_cap_db: f32,
 }
 
 impl VolumeGate {
@@ -124,6 +135,7 @@ impl VolumeGate {
             closed_since: None,
             closed_baseline_db: None,
             recheck_until: None,
+            reduction_cap_db: 0.0,
         };
         gate.restore_leftover();
         gate
@@ -268,7 +280,20 @@ impl VolumeGate {
                 self.closed_baseline_db = None;
             }
 
-            let mut target = gate_reduction_db(smoothed, params.threshold_db, params.range_db);
+            // Absenkungsgrenze nachregeln: nur so weit runter, dass die Messung noch etwas hört.
+            let range = params.range_db.max(0.0);
+            if smoothed_raw < MEASURE_FLOOR_DB {
+                let before = self.reduction_cap_db;
+                self.reduction_cap_db = (self.reduction_db - CAP_DOWN_DB_PER_SECOND * dt).max(0.0);
+                if before - self.reduction_cap_db > 3.0 {
+                    log!("Gate: senkt nur noch {:.0} dB ab, sonst hört die Lärmampel nichts mehr", self.reduction_cap_db);
+                }
+            } else if smoothed_raw > MEASURE_FLOOR_DB + MEASURE_HEADROOM_DB {
+                self.reduction_cap_db = (self.reduction_cap_db + CAP_UP_DB_PER_SECOND * dt).min(range);
+            }
+            self.reduction_cap_db = self.reduction_cap_db.min(range);
+
+            let mut target = gate_reduction_db(smoothed, params.threshold_db, range).min(self.reduction_cap_db);
             if smoothed >= params.threshold_db {
                 self.last_above = Instant::now();
             } else if self.last_above.elapsed() < Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
@@ -388,6 +413,7 @@ impl VolumeGate {
             self.volume = None;
         }
         self.reduction_db = 0.0;
+        self.reduction_cap_db = 0.0;
         self.smoothed_db = None;
         self.smoothed_raw_db = None;
         self.test = Test::Idle;
@@ -441,6 +467,7 @@ impl VolumeGate {
         let Some(current) = volume.get_db() else { return false };
         self.original_db = current;
         self.base_db = current;
+        self.reduction_cap_db = 0.0;
         self.applied_db = current;
         self.volume = Some(volume);
         self.reduction_db = 0.0;
