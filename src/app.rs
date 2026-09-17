@@ -539,7 +539,7 @@ impl LaermampelApp {
         let gate_open = running && p.gate_open.load(Ordering::Relaxed) && self.settings.gate_knob > KNOB_OFF;
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
-            ui.set_width(190.0);
+            ui.set_width(200.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
                 ui.label(egui::RichText::new(device_name).small().weak());
@@ -580,7 +580,7 @@ impl LaermampelApp {
                 ui.vertical(|ui| {
                     ui.add_space(156.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
-                        .on_hover_text("Warnton, wenn deine Stimme über die rote Linie in der Anzeige kommt")
+                        .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
                         .clicked()
                         && s.beep_enabled
                     {
