@@ -98,6 +98,11 @@ impl Spectrum {
     pub fn clear_profile(&mut self) {
         self.profile_db = None;
         self.profile_until = None;
+        // Sonst wird ein gerade fertig gemessenes Profil nach dem Löschen doch noch gespeichert
+        // und ist beim nächsten Start wieder da.
+        self.fresh_profile = None;
+        self.profile_sum.fill(0.0);
+        self.profile_count = 0;
     }
 
     /// Einmal pro Bild aufrufen; rechnet höchstens alle `INTERVAL`.
@@ -106,10 +111,12 @@ impl Spectrum {
         if self.last.elapsed() < INTERVAL {
             return;
         }
-        self.last = Instant::now();
         self.sample_rate = sample_rate.max(8000.0);
 
+        // Erst wenn wirklich Samples da sind, gilt der Durchgang als erledigt; sonst würde ein
+        // belegter Ringpuffer das Bild (und die Profilmessung) um ein Intervall zurückwerfen.
         let Some(samples) = raw.snapshot() else { return };
+        self.last = Instant::now();
         for (slot, (&x, &w)) in self.scratch.iter_mut().zip(samples.iter().zip(&self.window)) {
             *slot = Complex32::new(x * w, 0.0);
         }
@@ -136,5 +143,22 @@ impl Spectrum {
                 self.profile_until = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geloeschtes_profil_kommt_nicht_zurueck() {
+        let mut spectrum = Spectrum::new();
+        spectrum.profile_db = Some(vec![-80.0; BINS]);
+        spectrum.fresh_profile = Some(vec![-80.0; BINS]);
+
+        spectrum.clear_profile();
+
+        assert!(spectrum.profile_db().is_none(), "Profil ist gelöscht");
+        assert!(spectrum.take_new_profile().is_none(), "und wird auch nicht mehr gespeichert");
     }
 }

@@ -296,6 +296,11 @@ impl LaermampelApp {
         log!("Einstellungen geschlossen");
         self.settings_open = false;
         self.settings_window_seen = false;
+        // Die kleinen Fenster gehören zum Kanalzug; sonst springen sie beim nächsten Öffnen
+        // unaufgefordert wieder auf.
+        self.display_window_open = false;
+        self.general_window_open = false;
+        self.noise_window_open = false;
         if self.tray.is_none() {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
@@ -1046,15 +1051,14 @@ impl LaermampelApp {
 
         ui.label(self.latency_details());
         let mut buffer_ms = self.settings.buffer_ms;
-        if ui
+        let slider = ui
             .add(egui::Slider::new(&mut buffer_ms, 5.0..=60.0).text("Puffer").suffix(" ms"))
-            .on_hover_text("Kleiner heißt weniger Verzögerung, aber mehr Risiko für Aussetzer. Wirkt nach Neustart der Ausgabe.")
-            .drag_stopped()
-        {
-            self.settings.buffer_ms = buffer_ms;
+            .on_hover_text("Kleiner heißt weniger Verzögerung, aber mehr Risiko für Aussetzer. Wirkt nach Neustart der Ausgabe.");
+        self.settings.buffer_ms = buffer_ms;
+        // Neu starten, sobald der Wert feststeht: nach dem Ziehen, aber auch nach einer Eingabe
+        // über die Tastatur (sonst stand da ein Wert, der gar nicht wirkte).
+        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
             self.restart_meter();
-        } else {
-            self.settings.buffer_ms = buffer_ms;
         }
 
         let s = &mut self.settings;
@@ -1229,16 +1233,23 @@ impl eframe::App for LaermampelApp {
             meter_input,
             &gate_params,
         );
+        // Ohne Mikrofon fällt die Anzeige auf Stille zurück, statt auf dem letzten Wert
+        // stehen zu bleiben (sonst leuchtet der Punkt nach dem Abstecken ewig rot).
+        let input = input.or_else(|| self.meter.is_none().then_some(audio::SILENCE_DB));
         let became_red = self.level.update(input, dt, now, &self.settings);
-        if became_red {
+        // Stumm hört dich niemand: dann auch kein Warnton und kein Zähler.
+        if became_red && !self.settings.mic_muted {
             self.red_count += 1;
             if self.settings.beep_enabled {
                 beep::play(self.settings.beep_volume);
             }
         }
 
-        let rate = self.meter.as_ref().map_or(48_000.0, |m| m.input_rate as f32);
-        self.spectrum.update(self.meter.as_ref().map(|m| &*m.raw), rate);
+        // FFT nur rechnen, wenn jemand hinsieht oder gerade ein Profil gemessen wird.
+        if self.noise_window_open || self.spectrum.profile_running() {
+            let rate = self.meter.as_ref().map_or(48_000.0, |m| m.input_rate as f32);
+            self.spectrum.update(self.meter.as_ref().map(|m| &*m.raw), rate);
+        }
         if let Some(profile) = self.spectrum.take_new_profile() {
             self.settings.noise_profile = Some(profile);
         }
