@@ -734,6 +734,10 @@ impl LaermampelApp {
                 });
             });
 
+            // Genauer Wert zum Ablesen, z.B. um die Gate-Schwelle passend zu setzen.
+            let reading = if voice_db > -99.5 { format!("Pegel {voice_db:.0} dB") } else { "Pegel –".to_string() };
+            ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)));
+
             if nothing_processes {
                 let warning = egui::RichText::new("⚠ Comp., Fader, Limiter: nur mit VB-Cable").small().color(RED_TEXT);
                 if ui

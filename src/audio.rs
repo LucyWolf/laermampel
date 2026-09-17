@@ -332,3 +332,32 @@ impl Biquad {
         y
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Die Anzeige soll echte dBFS zeigen: ein Ton mit RMS -63 dBFS muss als -63 dB ankommen.
+    fn measure(freq: f32, rms_db: f32) -> f32 {
+        let rate = 48_000.0;
+        let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
+        let mut proc = Processor::new(rate, Arc::clone(&shared), None);
+        let amplitude = 10f32.powf(rms_db / 20.0) * std::f32::consts::SQRT_2;
+        // Eine Sekunde einschwingen lassen, dann den letzten Block ablesen.
+        for i in 0..rate as usize {
+            proc.push(amplitude * (2.0 * std::f32::consts::PI * freq * i as f32 / rate).sin());
+            if i < rate as usize - 960 {
+                shared.lock().unwrap().peak_db = SILENCE_DB;
+            }
+        }
+        shared.lock().unwrap().peak_db
+    }
+
+    #[test]
+    fn pegel_stimmt_in_dbfs() {
+        for level in [-63.0, -40.0, -20.0] {
+            let measured = measure(1000.0, level);
+            assert!((measured - level).abs() < 1.0, "{level} dB gemessen als {measured:.1} dB");
+        }
+    }
+}
