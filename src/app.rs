@@ -350,10 +350,11 @@ impl LaermampelApp {
         let builder = egui::ViewportBuilder::default()
             .with_title("Lärmampel – Einstellungen")
             .with_icon(Arc::clone(&self.icon))
-            .with_inner_size([250.0, 470.0])
-            .with_min_inner_size([240.0, 300.0])
-            // Keine Windows-Titelleiste: Verschieben, Minimieren und Schließen sitzen im Kanalzug.
-            .with_decorations(false);
+            .with_inner_size([220.0, 470.0])
+            .with_resizable(false)
+            // Keine Windows-Titelleiste und durchsichtiger Rand: der Kanalzug selbst ist das Fenster.
+            .with_decorations(false)
+            .with_transparent(true);
 
         ctx.show_viewport_immediate(id, builder, |ui, class| {
             if !self.settings_window_seen {
@@ -361,9 +362,7 @@ impl LaermampelApp {
                 let kind = if matches!(class, egui::ViewportClass::EmbeddedWindow) { "eingebettet" } else { "eigenes Fenster" };
                 log!("Einstellungsfenster gezeichnet ({kind})");
             }
-            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_ui(ui));
-            });
+            self.settings_ui(ui);
 
             let ctx = ui.ctx().clone();
             if self.display_window_open {
@@ -559,7 +558,9 @@ impl LaermampelApp {
         let gate_open = running && p.gate_open.load(Ordering::Relaxed) && self.settings.gate_knob > KNOB_OFF;
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
+            // Füllt das ganze Fenster aus, drumherum ist es durchsichtig.
             ui.set_width(200.0);
+            ui.set_min_height(ui.available_height());
 
             // Eigene Titelzeile: links zum Verschieben, rechts Zahnrad, Minimieren, Schließen.
             let mut minimize = false;
@@ -572,17 +573,35 @@ impl LaermampelApp {
                 if drag.drag_started() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                 }
+                // Links wie beim Headpat Server: Punkt in der Ampelfarbe, Name, Version.
+                let painter = ui.painter();
+                let dot = Pos2::new(drag_rect.left() + 5.0, drag_rect.center().y);
+                painter.circle_filled(dot, 4.0, zone_color(self.shown_zone()));
+                let name_rect = painter.text(
+                    Pos2::new(dot.x + 10.0, drag_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Lärmampel",
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+                painter.text(
+                    Pos2::new(name_rect.right() + 5.0, drag_rect.center().y + 1.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("v{}", updater::CURRENT_VERSION),
+                    egui::FontId::proportional(11.0),
+                    Color32::from_rgb(140, 146, 156),
+                );
                 if update_available {
-                    ui.painter().circle_filled(Pos2::new(drag_rect.right() - 6.0, drag_rect.center().y), 4.0, strip::ACCENT);
+                    painter.circle_filled(Pos2::new(drag_rect.right() - 6.0, drag_rect.center().y), 4.0, strip::ACCENT);
                 }
-                if strip::title_button(ui, "⚙", self.general_window_open, false)
+                if strip::title_button(ui, strip::TitleIcon::Gear, self.general_window_open)
                     .on_hover_text(if update_available { "Einstellungen · Update verfügbar" } else { "Einstellungen" })
                     .clicked()
                 {
                     self.general_window_open = !self.general_window_open;
                 }
-                minimize = strip::title_button(ui, "–", false, false).on_hover_text("Minimieren").clicked();
-                close = strip::title_button(ui, "✕", false, true).on_hover_text("Schließen").clicked();
+                minimize = strip::title_button(ui, strip::TitleIcon::Minimize, false).on_hover_text("Minimieren").clicked();
+                close = strip::title_button(ui, strip::TitleIcon::Close, false).on_hover_text("Schließen").clicked();
             });
             if minimize {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
