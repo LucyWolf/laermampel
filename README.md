@@ -51,6 +51,9 @@ Einrichten:
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
+Bei Problemen hilft die Log-Datei `%LOCALAPPDATA%\\LucyWolf\\Laermampel\\data\\laermampel.log`
+(Einstellungen → Version → „Log-Datei zeigen“). Sie hält Start, Mikrofon, Fenster, Updates und Abstürze fest.
+
 Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.json`.
 
 ## Bauen
