@@ -86,27 +86,32 @@ fn knob_range(ui: &mut Ui, value: &mut f32, min: f32, max: f32, step: f32, text:
     response
 }
 
-/// Senkrechter Fader in dB. Ziehen, Mausrad; Doppelklick setzt auf 0 dB.
+/// Senkrechter Fader in ganzen dB. Ziehen, Mausrad; Doppelklick setzt auf 0 dB.
 pub fn fader(ui: &mut Ui, value: &mut f32, min: f32, max: f32, height: f32) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(56.0, height), Sense::click_and_drag());
     let top = rect.top() + 18.0;
     let bottom = rect.bottom() - 18.0;
     let to_y = |v: f32| bottom - (v - min) / (max - min) * (bottom - top);
 
-    let mut new = *value;
+    // Ungerundeten Wert merken, damit kleine Mausrad-Bewegungen sich zu ganzen dB summieren.
+    let raw_id = response.id.with("ungerundet");
+    let mut raw = ui.data(|d| d.get_temp::<f32>(raw_id)).filter(|r| (r - *value).abs() <= 1.0).unwrap_or(*value);
     if response.dragged()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        new = min + (bottom - pos.y) / (bottom - top) * (max - min);
+        raw = min + (bottom - pos.y) / (bottom - top) * (max - min);
     }
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        new += scroll / 40.0 * 0.5;
+        raw += scroll / 40.0;
     }
     if response.double_clicked() {
-        new = 0.0;
+        raw = 0.0;
     }
-    let new = ((new * 10.0).round() / 10.0).clamp(min, max);
+    raw = raw.clamp(min, max);
+    ui.data_mut(|d| d.insert_temp(raw_id, raw));
+    // Auf ganze dB, damit „0dB“ auch wirklich 0 ist.
+    let new = raw.round().clamp(min, max) + 0.0;
     if new != *value {
         *value = new;
         response.mark_changed();
