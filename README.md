@@ -60,6 +60,11 @@ Einrichten:
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
+Unter dem Kanalzug steht neben dem Pegel die **Verzögerung in ms** (nur mit Ausgang). Beim Überfahren
+steht, woraus sie besteht: Mikrofon-Block + Puffer + Ausgabe-Block + Rauschfilter (10 ms). Den Puffer
+stellst du unter ⚙ → Feineinstellungen ein (5–60 ms): kleiner heißt weniger Verzögerung, aber mehr
+Risiko für Aussetzer.
+
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
 Unter ⚙ → „Rauschen“ zeigt ein Frequenz-Diagramm (wie in ReaFir), was das Mikrofon gerade hört.

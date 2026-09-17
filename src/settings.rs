@@ -58,6 +58,8 @@ pub struct Settings {
     pub output_off: bool,
     /// Rauschfilter (RNNoise) im Kanalzug.
     pub denoise: bool,
+    /// Puffer zwischen Aufnahme und Ausgabe in ms. Kleiner = weniger Verzögerung, mehr Aussetzer-Risiko.
+    pub buffer_ms: f32,
     /// Ziel-Sprachpegel in dBFS (RMS).
     pub agc_target_db: f32,
     /// Wie schnell runtergeregelt wird.
@@ -99,6 +101,7 @@ impl Default for Settings {
             agc_output_id: None,
             output_off: false,
             denoise: false,
+            buffer_ms: crate::agc::DEFAULT_BUFFER_MS,
             agc_target_db: -20.0,
             agc_attack_ms: 40.0,
             agc_release_ms: 1500.0,

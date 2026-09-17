@@ -1,6 +1,7 @@
 //! Mikrofon für andere Programme über VB-Cable: dieselbe Bearbeitung wie im Audio-Filter
 //! (Gate, Comp., Fader, Limiter), ausgegeben auf ein virtuelles Audiogerät.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -26,8 +27,8 @@ pub const VB_CABLE_MISSING: &str = "VB-Cable ist nicht installiert.";
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
 const VB_CABLE_HINT: &str = "cable input";
 
-/// Wie viel Puffer zwischen Mikrofon und Ausgabe angestrebt wird.
-const TARGET_BUFFER_SECONDS: f32 = 0.03;
+/// Notfallwert, falls nichts eingestellt ist.
+pub const DEFAULT_BUFFER_MS: f32 = 30.0;
 const MAX_BUFFER_SECONDS: f32 = 0.2;
 /// Die beiden Geräte laufen nie exakt gleich schnell, das wird hier sanft ausgeglichen.
 const MAX_DRIFT_CORRECTION: f64 = 0.005;
@@ -40,6 +41,29 @@ const PARAM_RELOAD_SAMPLES: usize = 256;
 pub struct ChainControl {
     settings: Mutex<Settings>,
     feedback: Mutex<Feedback>,
+    /// Woraus sich die Verzögerung zusammensetzt, in Samples bzw. Hz.
+    input_frames: AtomicU32,
+    input_rate: AtomicU32,
+    buffer_frames: AtomicU32,
+    output_frames: AtomicU32,
+    output_rate: AtomicU32,
+}
+
+/// Verzögerung in Millisekunden, aufgeschlüsselt.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Latency {
+    /// Block, den Windows der Lärmampel vom Mikrofon gibt.
+    pub input_ms: f32,
+    /// Puffer zwischen Aufnahme und Ausgabe.
+    pub buffer_ms: f32,
+    /// Block, den das Ausgabegerät abholt.
+    pub output_ms: f32,
+}
+
+impl Latency {
+    pub fn total_ms(&self) -> f32 {
+        self.input_ms + self.buffer_ms + self.output_ms
+    }
 }
 
 impl ChainControl {
@@ -51,6 +75,29 @@ impl ChainControl {
 
     pub fn feedback(&self) -> Feedback {
         self.feedback.lock().map(|f| *f).unwrap_or_default()
+    }
+
+    fn report_input(&self, frames: u32, rate: u32) {
+        self.input_frames.store(frames, Ordering::Relaxed);
+        self.input_rate.store(rate, Ordering::Relaxed);
+    }
+
+    fn report_output(&self, buffer_frames: u32, frames: u32, rate: u32) {
+        self.buffer_frames.store(buffer_frames, Ordering::Relaxed);
+        self.output_frames.store(frames, Ordering::Relaxed);
+        self.output_rate.store(rate, Ordering::Relaxed);
+    }
+
+    pub fn latency(&self) -> Latency {
+        let ms = |frames: &AtomicU32, rate: &AtomicU32| {
+            let rate = rate.load(Ordering::Relaxed);
+            if rate == 0 { 0.0 } else { frames.load(Ordering::Relaxed) as f32 * 1000.0 / rate as f32 }
+        };
+        Latency {
+            input_ms: ms(&self.input_frames, &self.input_rate),
+            buffer_ms: ms(&self.buffer_frames, &self.input_rate),
+            output_ms: ms(&self.output_frames, &self.output_rate),
+        }
     }
 }
 
@@ -79,6 +126,7 @@ pub fn list_output_devices() -> Vec<InputDevice> {
 /// Mikrofon → gemeinsame Kette → Puffer zur Ausgabe auf VB-Cable.
 pub struct VoiceChain {
     chain: Chain,
+    sample_rate: u32,
     control: Arc<ChainControl>,
     output: HeapProd<f32>,
     countdown: usize,
@@ -86,7 +134,12 @@ pub struct VoiceChain {
 
 impl VoiceChain {
     pub fn new(sample_rate: u32, control: Arc<ChainControl>, output: HeapProd<f32>) -> Self {
-        Self { chain: Chain::new(sample_rate as f32), control, output, countdown: 0 }
+        Self { chain: Chain::new(sample_rate as f32), sample_rate, control, output, countdown: 0 }
+    }
+
+    /// Blockgröße der Aufnahme melden, für die Verzögerungs-Anzeige.
+    pub fn report_input(&self, frames: u32) {
+        self.control.report_input(frames, self.sample_rate);
     }
 
     pub fn push(&mut self, x: f32) {
@@ -118,6 +171,8 @@ pub fn start_output(
     device_id: Option<&str>,
     samples: HeapCons<f32>,
     input_rate: u32,
+    buffer_ms: f32,
+    control: Arc<ChainControl>,
     fault: Arc<Fault>,
 ) -> Result<(cpal::Stream, String), String> {
     let host = cpal::default_host();
@@ -147,28 +202,32 @@ pub fn start_output(
         .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))?;
 
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build::<f32>(&device, &config, samples, input_rate, fault),
-        SampleFormat::I16 => build::<i16>(&device, &config, samples, input_rate, fault),
-        SampleFormat::I32 => build::<i32>(&device, &config, samples, input_rate, fault),
-        SampleFormat::U16 => build::<u16>(&device, &config, samples, input_rate, fault),
+        SampleFormat::F32 => build::<f32>(&device, &config, samples, input_rate, buffer_ms, control, fault),
+        SampleFormat::I16 => build::<i16>(&device, &config, samples, input_rate, buffer_ms, control, fault),
+        SampleFormat::I32 => build::<i32>(&device, &config, samples, input_rate, buffer_ms, control, fault),
+        SampleFormat::U16 => build::<u16>(&device, &config, samples, input_rate, buffer_ms, control, fault),
         other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
     }?;
     stream.play().map_err(|e| format!("Ausgabe lässt sich nicht starten: {}", describe(&e)))?;
     Ok((stream, name))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     mut samples: HeapCons<f32>,
     input_rate: u32,
+    buffer_ms: f32,
+    control: Arc<ChainControl>,
     fault: Arc<Fault>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample + FromSample<f32> + Send + 'static,
 {
     let channels = config.channels().max(1) as usize;
-    let mut state = OutputState::new(input_rate, config.sample_rate());
+    let output_rate = config.sample_rate();
+    let mut state = OutputState::new(input_rate, output_rate, buffer_ms);
     let mut mono = Vec::new();
 
     device
@@ -176,6 +235,7 @@ where
             config.clone().into(),
             move |data: &mut [T], _: &_| {
                 mono.resize(data.len() / channels, 0.0);
+                control.report_output(samples.occupied_len() as u32, mono.len() as u32, output_rate);
                 state.fill(&mut samples, &mut mono);
                 for (frame, &value) in data.chunks_mut(channels).zip(&mono) {
                     frame.fill(T::from_sample(value));
@@ -197,9 +257,9 @@ struct OutputState {
 }
 
 impl OutputState {
-    fn new(input_rate: u32, output_rate: u32) -> Self {
+    fn new(input_rate: u32, output_rate: u32, buffer_ms: f32) -> Self {
         Self {
-            target: ((input_rate as f32 * TARGET_BUFFER_SECONDS) as usize).max(1),
+            target: ((input_rate as f32 * buffer_ms.clamp(3.0, 200.0) / 1000.0) as usize).max(1),
             max: (input_rate as f32 * MAX_BUFFER_SECONDS) as usize,
             base_step: input_rate as f64 / output_rate as f64,
             primed: false,
@@ -260,7 +320,7 @@ mod tests {
         // Mikrofon 48 kHz läuft 0,2 % zu schnell bzw. zu langsam, Ausgabe 44,1 kHz, 10-ms-Blöcke.
         for input_per_block in [48.096 * 10.0, 47.904 * 10.0] {
         let (mut producer, mut consumer) = ringbuf::HeapRb::<f32>::new(48_000).split();
-        let mut state = OutputState::new(48_000, 44_100);
+        let mut state = OutputState::new(48_000, 44_100, DEFAULT_BUFFER_MS);
         let mut out = vec![0.0f32; 441];
         let (mut owed, mut underruns, mut max_fill) = (0.0f64, 0usize, 0usize);
 
