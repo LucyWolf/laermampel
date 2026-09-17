@@ -17,6 +17,9 @@ const LOWPASS_HZ: f32 = 4000.0;
 
 pub const SILENCE_DB: f32 = -100.0;
 
+pub const NO_DEVICE: &str = "Kein Gerät ausgewählt";
+pub const MISSING_DEVICE: &str = "Mikrofon nicht gefunden";
+
 /// Merkt sich einen Fehler aus einem Audio-Stream, der einen Neustart nötig macht.
 #[derive(Default)]
 pub struct Fault(Mutex<Option<String>>);
@@ -59,6 +62,7 @@ pub fn describe(err: &cpal::Error) -> String {
     }
 }
 
+#[derive(Clone)]
 pub struct InputDevice {
     pub id: String,
     pub name: String,
@@ -105,25 +109,15 @@ pub struct Meter {
 
 impl Meter {
     /// Startet die Aufnahme. Ist `device_id` unbekannt, wird das Standardmikrofon genommen.
-    pub fn start(device_id: Option<&str>, voice_setup: Option<VoiceSetup>) -> Result<Meter, String> {
+    /// Startet die Aufnahme vom ausgewählten Mikrofon. Ein Standardgerät gibt es bewusst nicht:
+    /// Ist in Windows VB-Cable als Standard eingestellt, gäbe das eine Rückkopplung.
+    pub fn start(device_id: &str, voice_setup: Option<VoiceSetup>) -> Result<Meter, String> {
         let host = cpal::default_host();
-        let chosen = device_id.and_then(|s| s.parse::<cpal::DeviceId>().ok()).and_then(|id| host.device_by_id(&id));
-        let explicitly_chosen = chosen.is_some();
-        let mut device = chosen
-            .or_else(|| host.default_input_device())
-            .ok_or_else(|| "Kein Mikrofon gefunden".to_string())?;
-
-        // Ist in Windows „CABLE Output“ das Standard-Mikrofon, würde die Lärmampel ihre eigene
-        // Ausgabe wieder aufnehmen: Rückkopplung. Dann lieber das erste echte Mikrofon nehmen.
-        if !explicitly_chosen && agc::is_virtual_device(&device_name(&device)) {
-            if let Some(real) = host
-                .input_devices()
-                .ok()
-                .and_then(|mut all| all.find(|d| !agc::is_virtual_device(&device_name(d))))
-            {
-                device = real;
-            }
-        }
+        let device = device_id
+            .parse::<cpal::DeviceId>()
+            .ok()
+            .and_then(|id| host.device_by_id(&id))
+            .ok_or_else(|| MISSING_DEVICE.to_string())?;
         let input_is_virtual = agc::is_virtual_device(&device_name(&device));
 
         let config = device
