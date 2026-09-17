@@ -761,11 +761,12 @@ impl LaermampelApp {
             ui.add_space(6.0);
 
             ui.horizontal(|ui| {
-                // Gelb und Rot nur zeigen, solange der Warnton an ist.
                 let gate_marker = gate_on(s).then_some((s.gate_threshold_db, gate_open));
-                let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
-                let muted = s.mic_muted;
-                strip::level_meter(ui, meter_db, muted, gate_marker, running, &mut s.agc_ceiling_db, thresholds, 230.0);
+                let (muted, beeps) = (s.mic_muted, s.beep_enabled);
+                // Gelb und Rot sind dieselben Schwellen wie beim Punkt bzw. der Leiste auf dem
+                // Bildschirm: beide Anzeigen sollen bei derselben Stimme dasselbe zeigen.
+                let zones = (&mut s.yellow_db, &mut s.red_db);
+                strip::level_meter(ui, meter_db, muted, gate_marker, running, &mut s.agc_ceiling_db, zones, beeps, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;

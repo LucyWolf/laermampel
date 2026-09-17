@@ -159,9 +159,10 @@ const SCALE_WIDTH: f32 = 26.0;
 /// Breite des Randes links für die Pfeile. Bleibt immer frei, damit nichts springt.
 const ARROW_GUTTER: f32 = 12.0;
 
-/// Pegelanzeige mit zwei Balken, -60 bis 0 dB.
-/// Links deine Stimme, rechts der Ausgang mit der gelben Limiter-Linie.
-/// Mit `thresholds` (Gelb, Rot) sitzen links am Rand zwei greifbare Pfeile.
+/// Pegelanzeige, -100 bis 0 dB.
+/// `zones` sind Gelb und Rot der Ampel: dieselben Schwellen wie beim Punkt bzw. der Leiste
+/// auf dem Bildschirm, damit beide Anzeigen dasselbe sagen. Links am Rand sitzen sie als
+/// greifbare Pfeile.
 /// Der Limiter ist auf 0 dB aus und erscheint dann nur, wenn die Maus über seinem Balken ist.
 pub fn level_meter(
     ui: &mut Ui,
@@ -171,9 +172,12 @@ pub fn level_meter(
     // Ohne Ausgang kann der Limiter nichts begrenzen; dann wird er grau gezeichnet.
     limit_running: bool,
     limit_db: &mut f32,
-    thresholds: Option<(&mut f32, &mut f32)>,
+    zones: (&mut f32, &mut f32),
+    // Löst der rote Bereich auch den Warnton aus? Ändert nur den Hinweistext.
+    beeps: bool,
     height: f32,
 ) -> Response {
+    let (yellow, red) = zones;
     // Ein Balken: ein Mikrofon ist mono.
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0 + ARROW_GUTTER + SCALE_WIDTH, height), Sense::click_and_drag());
     let gutter = Rect::from_min_max(rect.min, pos2(rect.left() + ARROW_GUTTER, rect.bottom()));
@@ -184,7 +188,7 @@ pub fn level_meter(
     let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
 
     // Am Rand bei den Pfeilen: Gelb oder Rot. In der Anzeige: die nächste Linie, Limiter eingeschlossen.
-    let lines_y = thresholds.as_ref().map(|(yellow, red)| (to_y(**yellow), to_y(**red)));
+    let lines_y = Some((to_y(*yellow), to_y(*red)));
     let limit_line_y = to_y(*limit_db);
     let line_at = |p: Pos2| {
         let in_gutter = p.x < gutter.right();
@@ -225,7 +229,6 @@ pub fn level_meter(
 
     let pointer_db = response.interact_pointer_pos().filter(|_| response.dragged()).map(|p| to_db(p.y));
     let mut changed = false;
-    let mut thresholds = thresholds;
     match active_line {
         Some(MeterLine::Limit) => {
             let mut new = pointer_db.unwrap_or(*limit_db);
@@ -238,18 +241,18 @@ pub fn level_meter(
             *limit_db = new;
         }
         Some(MeterLine::Yellow) => {
-            if let (Some(db), Some((yellow, red))) = (pointer_db, thresholds.as_mut()) {
+            if let Some(db) = pointer_db {
                 // Gelb bleibt unter Rot.
-                let new = db.round().clamp(METER_MIN_DB, **red) + 0.0;
-                changed |= new != **yellow;
-                **yellow = new;
+                let new = db.round().clamp(METER_MIN_DB, *red) + 0.0;
+                changed |= new != *yellow;
+                *yellow = new;
             }
         }
         Some(MeterLine::Red) => {
-            if let (Some(db), Some((yellow, red))) = (pointer_db, thresholds.as_mut()) {
-                let new = db.round().clamp(**yellow, 0.0) + 0.0;
-                changed |= new != **red;
-                **red = new;
+            if let Some(db) = pointer_db {
+                let new = db.round().clamp(*yellow, 0.0) + 0.0;
+                changed |= new != *red;
+                *red = new;
             }
         }
         None => {}
@@ -290,11 +293,13 @@ pub fn level_meter(
         let column = inner;
         for i in 0..SEGMENTS {
             let db = METER_MIN_DB + (i as f32 + 0.5) / SEGMENTS as f32 * -METER_MIN_DB;
+            // Dieselben Schwellen wie die Anzeige auf dem Bildschirm, sonst zeigen beide
+            // bei derselben Stimme verschiedene Farben.
             let color = if muted {
                 Color32::from_gray(150)
-            } else if db > -3.0 {
+            } else if db >= *red {
                 RED
-            } else if db > -12.0 {
+            } else if db >= *yellow {
                 YELLOW
             } else {
                 ACCENT
@@ -328,8 +333,8 @@ pub fn level_meter(
     }
 
     // Gelb und Rot: Linie über die ganze Anzeige plus Pfeil am Rand; die gegriffene etwas kräftiger.
-    if let Some((yellow, red)) = thresholds.as_ref() {
-        for (db, color, line) in [(**yellow, YELLOW, MeterLine::Yellow), (**red, RED, MeterLine::Red)] {
+    {
+        for (db, color, line) in [(*yellow, YELLOW, MeterLine::Yellow), (*red, RED, MeterLine::Red)] {
             let y = to_y(db);
             let grabbed = active_line == Some(line);
             painter.line_segment(
@@ -346,12 +351,13 @@ pub fn level_meter(
         }
     }
 
-    let hint = match (active_line, thresholds.as_ref()) {
-        (Some(MeterLine::Yellow), Some((yellow, _))) => format!("Gelb ab {:.0} dB · Pfeil ziehen", **yellow),
-        (Some(MeterLine::Red), Some((_, red))) => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", **red),
-        (Some(MeterLine::Limit), _) if limit_running => "Limiter: Linie runterziehen, Doppelklick: aus.".to_string(),
-        (Some(MeterLine::Limit), _) => "Limiter: wirkt erst mit einem Ausgang (VB-Cable). Doppelklick: aus.".to_string(),
-        _ => String::new(),
+    let hint = match active_line {
+        Some(MeterLine::Yellow) => format!("Gelb ab {:.0} dB · Pfeil ziehen", *yellow),
+        Some(MeterLine::Red) if beeps => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", *red),
+        Some(MeterLine::Red) => format!("Rot ab {:.0} dB · Pfeil ziehen", *red),
+        Some(MeterLine::Limit) if limit_running => "Limiter: Linie runterziehen, Doppelklick: aus.".to_string(),
+        Some(MeterLine::Limit) => "Limiter: wirkt erst mit einem Ausgang (VB-Cable). Doppelklick: aus.".to_string(),
+        None => String::new(),
     };
     response.on_hover_text(format!("Stimme {voice_db:.1} dB\n{hint}"))
 }
