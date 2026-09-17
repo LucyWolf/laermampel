@@ -127,6 +127,8 @@ struct Shared {
 
 /// Mikrofon für andere Programme einschalten: wohin ausgeben und mit welchen Werten.
 pub struct VoiceSetup {
+    /// Puffer zwischen Aufnahme und Ausgabe in ms; kleiner heißt weniger Verzögerung.
+    pub buffer_ms: f32,
     pub output_id: Option<String>,
     pub control: Arc<ChainControl>,
 }
@@ -180,11 +182,19 @@ impl Meter {
             ));
         } else if let Some(setup) = voice_setup {
             let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
-            match agc::start_output(setup.output_id.as_deref(), consumer, input_rate, Arc::clone(&fault)) {
+            let control = Arc::clone(&setup.control);
+            match agc::start_output(
+                setup.output_id.as_deref(),
+                consumer,
+                input_rate,
+                setup.buffer_ms,
+                Arc::clone(&control),
+                Arc::clone(&fault),
+            ) {
                 Ok((stream, name)) => {
                     output = Some(stream);
                     agc_output_name = Some(name);
-                    chain = Some(VoiceChain::new(input_rate, setup.control, producer));
+                    chain = Some(VoiceChain::new(input_rate, control, producer));
                 }
                 Err(e) => agc_error = Some(e),
             }
@@ -254,6 +264,7 @@ where
         .build_input_stream(
             config.clone().into(),
             move |data: &[T], _: &_| {
+                proc.report_block((data.len() / channels) as u32);
                 // Nur der erste Kanal, beim Headset-Mikrofon sind die anderen identisch oder leer.
                 for frame in data.chunks(channels) {
                     proc.push(f32::from_sample(frame[0]));
@@ -291,6 +302,13 @@ impl Processor {
             shared,
             raw,
             chain,
+        }
+    }
+
+    /// Wie groß der Block ist, den Windows uns gibt: der erste Teil der Verzögerung.
+    fn report_block(&self, frames: u32) {
+        if let Some(chain) = &self.chain {
+            chain.report_input(frames);
         }
     }
 

@@ -186,6 +186,7 @@ impl LaermampelApp {
         self.meter = None;
         self.last_retry = Instant::now();
         let voice_setup = (!self.settings.output_off).then(|| VoiceSetup {
+            buffer_ms: self.settings.buffer_ms,
             output_id: self.settings.agc_output_id.clone(),
             control: Arc::clone(&self.chain_control),
         });
@@ -768,8 +769,13 @@ impl LaermampelApp {
             });
 
             // Genauer Wert zum Ablesen, z.B. um die Gate-Schwelle passend zu setzen.
-            let reading = if voice_db > -99.5 { format!("Pegel {voice_db:.0} dB") } else { "Pegel –".to_string() };
-            ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)));
+            let level = if voice_db > -99.5 { format!("Pegel {voice_db:.0} dB") } else { "Pegel –".to_string() };
+            let reading = match self.latency_ms() {
+                Some(ms) => format!("{level} · {ms:.0} ms"),
+                None => level,
+            };
+            ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)))
+                .on_hover_text(self.latency_details());
 
             self.output_picker_ui(ui);
 
@@ -967,6 +973,32 @@ impl LaermampelApp {
         });
     }
 
+    /// Verzögerung vom Mikrofon bis zum Ausgang, nur wenn überhaupt ausgegeben wird.
+    fn latency_ms(&self) -> Option<f32> {
+        let running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
+        running.then(|| self.chain_control.latency().total_ms() + self.denoise_ms())
+    }
+
+    /// RNNoise arbeitet in Blöcken von 10 ms.
+    fn denoise_ms(&self) -> f32 {
+        if self.settings.denoise { 10.0 } else { 0.0 }
+    }
+
+    fn latency_details(&self) -> String {
+        let Some(total) = self.latency_ms() else {
+            return "Verzögerung entsteht erst mit einem Ausgang (VB-Cable).".to_string();
+        };
+        let l = self.chain_control.latency();
+        format!(
+            "Verzögerung {total:.0} ms: Mikrofon {:.0} ms + Puffer {:.0} ms + Ausgabe {:.0} ms + Rauschfilter {:.0} ms.\n\
+             Kleiner geht über ⚙ → Feineinstellungen → Puffer.",
+            l.input_ms,
+            l.buffer_ms,
+            l.output_ms,
+            self.denoise_ms()
+        )
+    }
+
     /// Gesamtpegel des gemessenen Rauschprofils (Summe über alle Frequenzen).
     fn profile_total_db(&self) -> Option<f32> {
         let profile = self.spectrum.profile_db()?;
@@ -987,6 +1019,19 @@ impl LaermampelApp {
             ui.colored_label(RED_TEXT, err);
         } else if output_name.is_some() {
             ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
+        }
+
+        ui.label(self.latency_details());
+        let mut buffer_ms = self.settings.buffer_ms;
+        if ui
+            .add(egui::Slider::new(&mut buffer_ms, 5.0..=60.0).text("Puffer").suffix(" ms"))
+            .on_hover_text("Kleiner heißt weniger Verzögerung, aber mehr Risiko für Aussetzer. Wirkt nach Neustart der Ausgabe.")
+            .drag_stopped()
+        {
+            self.settings.buffer_ms = buffer_ms;
+            self.restart_meter();
+        } else {
+            self.settings.buffer_ms = buffer_ms;
         }
 
         let s = &mut self.settings;
