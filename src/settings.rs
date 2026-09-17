@@ -98,7 +98,7 @@ impl Default for Settings {
             agc_attack_ms: 40.0,
             agc_release_ms: 1500.0,
             agc_gate_db: -50.0,
-            agc_ceiling_db: -1.0,
+            agc_ceiling_db: 0.0,
         }
     }
 }

@@ -116,10 +116,12 @@ pub fn fader(ui: &mut Ui, value: &mut f32, min: f32, max: f32, height: f32) -> R
 
 pub const METER_MIN_DB: f32 = -60.0;
 pub const LIMIT_MIN_DB: f32 = -40.0;
-pub const LIMIT_DEFAULT_DB: f32 = -1.0;
+/// 0 dB = Limiter aus (nur die harte Grenze des Formats).
+pub const LIMIT_OFF_DB: f32 = 0.0;
 
 /// Senkrechte Pegelanzeige aus Segmenten, -60 bis 0 dB, mit Spitzenwert und greifbarem Limiter.
-/// Die Limiter-Linie wird mit der Maus verschoben, Doppelklick setzt sie zurück.
+/// Die Limiter-Linie wird mit der Maus verschoben, Doppelklick schaltet ihn aus.
+/// Ist er aus, erscheint er erst, wenn die Maus über der Anzeige ist.
 pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32, height: f32) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(44.0, height), Sense::click_and_drag());
     let inner = rect.shrink(3.0);
@@ -132,9 +134,10 @@ pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32,
         new = METER_MIN_DB + (inner.bottom() - pos.y) / inner.height() * -METER_MIN_DB;
     }
     if response.double_clicked() {
-        new = LIMIT_DEFAULT_DB;
+        new = LIMIT_OFF_DB;
     }
-    let new = new.round().clamp(LIMIT_MIN_DB, 0.0);
+    // + 0.0 macht aus -0 eine 0, sonst steht „-0“ da.
+    let new = new.round().clamp(LIMIT_MIN_DB, LIMIT_OFF_DB) + 0.0;
     if new != *limit_db {
         *limit_db = new;
         response.mark_changed();
@@ -175,13 +178,17 @@ pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32,
     }
 
     // Limiter: alles oberhalb der Linie wird nicht durchgelassen.
+    let limit_active = *limit_db < LIMIT_OFF_DB;
+    if !limit_active && !response.hovered() && !response.dragged() {
+        return response.on_hover_text(format!("Pegel {level_db:.1} dB"));
+    }
     let limit_y = to_y(*limit_db);
     let limit_color = Color32::from_rgb(225, 205, 70);
     let area = Rect::from_min_max(inner.min, pos2(inner.right(), limit_y));
     painter.rect_filled(area, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(90, 80, 10, 225));
     painter.line_segment([pos2(inner.left(), limit_y), pos2(inner.right(), limit_y)], Stroke::new(2.0, limit_color));
 
-    let label = format!("Lim\n{:.0}", *limit_db);
+    let label = if limit_active { format!("Lim\n{:.0}", *limit_db) } else { "Lim\naus".to_string() };
     let font = FontId::proportional(12.0);
     if area.height() >= 32.0 {
         painter.text(pos2(inner.center().x, limit_y - 3.0), Align2::CENTER_BOTTOM, label, font, limit_color);
@@ -192,7 +199,8 @@ pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32,
         painter.text(pos2(inner.center().x, limit_y + 3.0), Align2::CENTER_TOP, label, font, limit_color);
     }
 
-    response.on_hover_text(format!("Pegel {level_db:.1} dB · Limiter {:.0} dB (ziehen, Doppelklick: {LIMIT_DEFAULT_DB:.0} dB)", *limit_db))
+    let limit_text = if limit_active { format!("{:.0} dB", *limit_db) } else { "aus".to_string() };
+    response.on_hover_text(format!("Pegel {level_db:.1} dB · Limiter {limit_text} (runterziehen zum Einschalten, Doppelklick: aus)"))
 }
 
 /// Mute-Taste, rot wenn aktiv.
