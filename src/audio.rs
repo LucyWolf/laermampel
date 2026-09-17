@@ -8,12 +8,10 @@ use ringbuf::HeapRb;
 use ringbuf::traits::Split;
 
 use crate::agc::{self, ChainControl, VoiceChain};
+use crate::dsp::{Biquad, METER_HIGHPASS_HZ, METER_LOWPASS_HZ};
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
 const BLOCK_SECONDS: f32 = 0.02;
-/// Sprachbereich, alles außerhalb wird weggefiltert (Trittschall, Lüfter, Zischen).
-const HIGHPASS_HZ: f32 = 100.0;
-const LOWPASS_HZ: f32 = 4000.0;
 
 pub const SILENCE_DB: f32 = -100.0;
 
@@ -300,8 +298,8 @@ struct Processor {
 impl Processor {
     fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>, raw: Arc<RawSamples>, chain: Option<VoiceChain>) -> Self {
         Self {
-            highpass: Biquad::highpass(sample_rate, HIGHPASS_HZ),
-            lowpass: Biquad::lowpass(sample_rate, LOWPASS_HZ.min(sample_rate * 0.45)),
+            highpass: Biquad::highpass(sample_rate, METER_HIGHPASS_HZ),
+            lowpass: Biquad::lowpass(sample_rate, METER_LOWPASS_HZ.min(sample_rate * 0.45)),
             sum_sq: 0.0,
             count: 0,
             block_len: ((sample_rate * BLOCK_SECONDS) as usize).max(1),
@@ -348,63 +346,6 @@ impl Processor {
             s.fresh = true;
             self.pending_db = SILENCE_DB;
         }
-    }
-}
-
-/// Biquad-Filter nach dem Audio EQ Cookbook (R. Bristow-Johnson).
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    x1: f32,
-    x2: f32,
-    y1: f32,
-    y2: f32,
-}
-
-impl Biquad {
-    fn highpass(sample_rate: f32, freq: f32) -> Self {
-        let (cos, alpha) = Self::prewarp(sample_rate, freq);
-        Self::normalized((1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0, cos, alpha)
-    }
-
-    fn lowpass(sample_rate: f32, freq: f32) -> Self {
-        let (cos, alpha) = Self::prewarp(sample_rate, freq);
-        Self::normalized((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0, cos, alpha)
-    }
-
-    fn prewarp(sample_rate: f32, freq: f32) -> (f32, f32) {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
-        let q = std::f32::consts::FRAC_1_SQRT_2;
-        (w0.cos(), w0.sin() / (2.0 * q))
-    }
-
-    fn normalized(b0: f32, b1: f32, b2: f32, cos: f32, alpha: f32) -> Self {
-        let a0 = 1.0 + alpha;
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: -2.0 * cos / a0,
-            a2: (1.0 - alpha) / a0,
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-        }
-    }
-
-    fn run(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
-            - self.a1 * self.y1
-            - self.a2 * self.y2;
-        self.x2 = self.x1;
-        self.x1 = x;
-        self.y2 = self.y1;
-        self.y1 = y;
-        y
     }
 }
 

@@ -20,9 +20,8 @@ use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
 use crate::volume_gate::{GateParams, VolumeGate};
 
-/// Anzeigebereich des Pegelbalkens in dBFS. Derselbe wie im Kanalzug: sonst steht dieselbe
-/// Stimme in den beiden Anzeigen an ganz verschiedenen Stellen.
-const BAR_MIN_DB: f32 = strip::METER_MIN_DB;
+/// Oberes Ende des Pegelbalkens. Das untere stellt man ein (`bar_min_db`): eng heißt mehr
+/// Auflösung beim Sprechen, -100 zeigt denselben Bereich wie der Kanalzug.
 const BAR_MAX_DB: f32 = 0.0;
 const BAR_HEIGHT: f32 = 28.0;
 
@@ -339,7 +338,8 @@ impl LaermampelApp {
 
     fn draw_level_bar(&self, painter: &egui::Painter, rect: Rect, brightness: f32) {
         let to_x = |db: f32| {
-            let t = ((db - BAR_MIN_DB) / (BAR_MAX_DB - BAR_MIN_DB)).clamp(0.0, 1.0);
+            let min_db = self.settings.bar_min_db.min(BAR_MAX_DB - 10.0);
+            let t = ((db - min_db) / (BAR_MAX_DB - min_db)).clamp(0.0, 1.0);
             rect.left() + t * rect.width()
         };
 
@@ -389,8 +389,9 @@ impl LaermampelApp {
                     return;
                 }
                 painter.rect_filled(rect, CornerRadius::same(8), tint);
-                // Der Pegelbalken folgt derselben Helligkeit, sonst leuchtet er voll im gedimmten Feld.
-                self.draw_level_bar(painter, rect.shrink(7.0), brightness.max(0.2));
+                // Der Balken selbst bleibt kräftig: er ist das, was man ablesen soll.
+                // Durchsichtig machen geht über den Deckkraft-Regler.
+                self.draw_level_bar(painter, rect.shrink(7.0), 1.0);
                 if muted {
                     painter.rect_stroke(rect.shrink(1.5), CornerRadius::same(8), mute_ring, egui::StrokeKind::Inside);
                 }
@@ -571,6 +572,13 @@ impl LaermampelApp {
             DisplayMode::Dot => ui.add(egui::Slider::new(&mut s.dot_size, 6.0..=80.0).text("Größe").suffix(" px")),
             DisplayMode::Bar => ui.add(egui::Slider::new(&mut s.bar_width, 100.0..=800.0).text("Breite").suffix(" px")),
         };
+        if s.display == DisplayMode::Bar {
+            ui.add(egui::Slider::new(&mut s.bar_min_db, -100.0..=-30.0).text("Bereich ab").suffix(" dB"))
+                .on_hover_text(
+                    "Wo der Balken anfängt. Enger heißt: deine Sprechlautstärke nutzt mehr vom Balken. \
+                     Auf -100 zeigt er genau denselben Bereich wie die Anzeige im Kanalzug.",
+                );
+        }
         ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
         ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
         ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
@@ -945,7 +953,7 @@ impl LaermampelApp {
         ui.add_enabled_ui(rate_48k, |ui| {
             let s = &mut self.settings;
             ui.horizontal(|ui| {
-                ui.label("Rauschfilter");
+                ui.label("Störgeräusche");
                 if ui
                     .selectable_label(!s.denoise, "Aus")
                     .on_hover_text("Das Mikrofon geht unbearbeitet durch.")
@@ -965,7 +973,8 @@ impl LaermampelApp {
                 egui::RichText::new(if s.denoise {
                     s.denoise_level.hint()
                 } else {
-                    "KI-Filter (RNNoise) gegen Tastatur, Lüfter und Brummen. Wirkt über den Ausgang und kostet 10 ms."
+                    "KI-Filter: nimmt alles weg, was keine Stimme ist – Tastatur, Lüfter, Straße, \
+                     Stimmen im Hintergrund. Wirkt über den Ausgang und kostet 10 ms."
                 })
                 .small()
                 .weak(),
