@@ -17,20 +17,56 @@ mod imp {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub fn is_enabled() -> bool {
+    /// Was im Run-Schlüssel steht, oder `None`, wenn es keinen Eintrag gibt.
+    fn stored_command() -> Option<String> {
         let (key, value) = (wide(RUN_KEY), wide(VALUE_NAME));
-        let mut size = 0u32;
-        let status = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), &mut size)
-        };
-        status == ERROR_SUCCESS
+        unsafe {
+            let mut size = 0u32;
+            let status =
+                RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), &mut size);
+            if status != ERROR_SUCCESS {
+                return None;
+            }
+            let mut buffer = vec![0u16; size as usize / 2 + 1];
+            let mut size = (buffer.len() * 2) as u32;
+            let status = RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+            );
+            if status != ERROR_SUCCESS {
+                return None;
+            }
+            let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            Some(String::from_utf16_lossy(&buffer[..end]))
+        }
+    }
+
+    /// Der Befehl, den diese Lärmampel eintragen würde.
+    fn own_command() -> Option<String> {
+        let exe = std::env::current_exe().ok()?;
+        Some(format!("\"{}\"", exe.display()))
+    }
+
+    pub fn is_enabled() -> bool {
+        // Zeigt der Eintrag auf eine andere Datei (verschoben, anders installiert), gilt er nicht.
+        // Sonst stünde das Häkchen auf „an“, während Windows etwas anderes oder nichts startet.
+        match (stored_command(), own_command()) {
+            (Some(stored), Some(own)) => stored.eq_ignore_ascii_case(&own),
+            (Some(_), None) => true,
+            _ => false,
+        }
     }
 
     pub fn set_enabled(enabled: bool) -> Result<(), String> {
         let (key, value) = (wide(RUN_KEY), wide(VALUE_NAME));
         let status = if enabled {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let data = wide(&format!("\"{}\"", exe.display()));
+            let command = own_command().ok_or_else(|| "Eigener Pfad ist unbekannt".to_string())?;
+            let data = wide(&command);
             unsafe {
                 RegSetKeyValueW(
                     HKEY_CURRENT_USER,

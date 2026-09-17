@@ -95,6 +95,13 @@ impl Spectrum {
         self.fresh_profile.take()
     }
 
+    /// Das Diagramm wird wieder angezeigt: das Bild von vorhin nicht weiterschleppen.
+    /// (Gerechnet wird nur bei offenem Fenster, sonst wären die Bänder veraltet.)
+    pub fn restart(&mut self) {
+        self.ready = false;
+        self.last = Instant::now() - INTERVAL;
+    }
+
     pub fn clear_profile(&mut self) {
         self.profile_db = None;
         self.profile_until = None;

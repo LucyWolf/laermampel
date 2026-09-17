@@ -173,10 +173,13 @@ impl LaermampelApp {
         // Früher ging der Fader in 0,1-dB-Schritten; ein kaum sichtbarer Rest wie 0,3 dB wird 0.
         app.settings.fader_db = app.settings.fader_db.round() + 0.0;
         // Alte Auswahl von Kopfhörern oder Lautsprechern als Ausgabe verwerfen (Rückkopplung).
+        // Nur wenn das Gerät auch wirklich da ist: beim Autostart sind die Audiogeräte teils noch
+        // nicht aufgezählt, dann bliebe die Auswahl sonst für immer weg.
         if let Some(id) = &app.settings.agc_output_id
-            && !app.output_devices.iter().any(|d| &d.id == id)
+            && let Some(name) = agc::output_device_name(id)
+            && !agc::is_virtual_device(&name)
         {
-            log!("Ausgabe-Auswahl verworfen, kein virtuelles Gerät: {id}");
+            log!("Ausgabe-Auswahl verworfen, kein virtuelles Gerät: {name}");
             app.settings.agc_output_id = None;
         }
         if let Some(profile) = app.settings.noise_profile.clone() {
@@ -226,11 +229,17 @@ impl LaermampelApp {
         }
     }
 
+    /// Der Rauschfilter (RNNoise) arbeitet nur mit 48 kHz. Bei einem anderen Mikrofon
+    /// läuft er gar nicht – dann darf er auch nirgends als aktiv gelten.
+    fn denoise_active(&self) -> bool {
+        self.settings.denoise && self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000)
+    }
+
     /// Einstellungen aus der Oberfläche für die Bearbeitungskette.
     fn chain_settings(&self) -> ChainSettings {
         let s = &self.settings;
         ChainSettings {
-            denoise: s.denoise,
+            denoise: self.denoise_active(),
             gate: GateSettings {
                 enabled: gate_on(s),
                 threshold_db: s.gate_threshold_db,
@@ -326,7 +335,7 @@ impl LaermampelApp {
         }
     }
 
-    fn draw_level_bar(&self, painter: &egui::Painter, rect: Rect) {
+    fn draw_level_bar(&self, painter: &egui::Painter, rect: Rect, brightness: f32) {
         let to_x = |db: f32| {
             let t = ((db - BAR_MIN_DB) / (BAR_MAX_DB - BAR_MIN_DB)).clamp(0.0, 1.0);
             rect.left() + t * rect.width()
@@ -334,13 +343,13 @@ impl LaermampelApp {
 
         painter.rect_filled(rect, CornerRadius::same(4), Color32::from_black_alpha(140));
         let fill = Rect::from_min_max(rect.min, Pos2::new(to_x(self.level.display_db), rect.max.y));
-        painter.rect_filled(fill, CornerRadius::same(4), zone_color(self.level.zone));
+        painter.rect_filled(fill, CornerRadius::same(4), zone_color(self.level.zone).gamma_multiply(brightness));
 
         for (db, zone) in [(self.settings.yellow_db, Zone::Yellow), (self.settings.red_db, Zone::Red)] {
             let x = to_x(db);
             painter.line_segment(
                 [Pos2::new(x, rect.top() - 2.0), Pos2::new(x, rect.bottom() + 2.0)],
-                Stroke::new(2.0, zone_color(zone)),
+                Stroke::new(2.0, zone_color(zone).gamma_multiply(brightness)),
             );
         }
     }
@@ -371,8 +380,13 @@ impl LaermampelApp {
                 painter.circle(rect.center(), radius, tint, Stroke::new(1.5, outline));
             }
             DisplayMode::Bar => {
+                // Wie beim Punkt: auf 0 gestellte Helligkeit heißt unsichtbar. Stumm bleibt sichtbar.
+                if brightness <= 0.01 && !muted {
+                    return;
+                }
                 painter.rect_filled(rect, CornerRadius::same(8), tint);
-                self.draw_level_bar(painter, rect.shrink(7.0));
+                // Der Pegelbalken folgt derselben Helligkeit, sonst leuchtet er voll im gedimmten Feld.
+                self.draw_level_bar(painter, rect.shrink(7.0), brightness.max(0.2));
                 if muted {
                     painter.rect_stroke(rect.shrink(1.5), CornerRadius::same(8), mute_ring, egui::StrokeKind::Inside);
                 }
@@ -624,7 +638,7 @@ impl LaermampelApp {
         if s.agc_ceiling_db < 0.0 {
             needs_cable.push("Limiter");
         }
-        if s.denoise {
+        if s.denoise && rate_48k {
             needs_cable.push("Rauschfilter");
         }
         let nothing_processes = !needs_cable.is_empty() && feedback.is_none();
@@ -760,16 +774,22 @@ impl LaermampelApp {
                     self.display_window_open = display_open;
                     ui.add_space(4.0);
                     // Grün = Filter läuft, blau = nur das Fenster ist offen.
-                    let color = if s.denoise { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
-                    let mut noise_open = self.noise_window_open || s.denoise;
+                    let filtering = s.denoise && rate_48k;
+                    let color = if filtering { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
+                    let mut noise_open = self.noise_window_open || filtering;
                     strip::toggle_button(ui, &mut noise_open, "Rausch", color)
-                        .on_hover_text(match (s.denoise, rate_48k) {
+                        .on_hover_text(match (filtering, rate_48k) {
                             (true, _) => "Rauschfilter läuft. Klick öffnet das Fenster mit Diagramm und Profil.",
                             (false, true) => "Öffnet „Rauschen“: Filter einschalten, Frequenz-Diagramm, Rauschprofil.",
                             (false, false) => "Öffnet „Rauschen“. Der Filter selbst braucht ein Mikrofon mit 48 kHz.",
                         })
                         .clicked()
-                        .then(|| self.noise_window_open = !self.noise_window_open);
+                        .then(|| {
+                            self.noise_window_open = !self.noise_window_open;
+                            if self.noise_window_open {
+                                self.spectrum.restart();
+                            }
+                        });
                     ui.add_space(88.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
                         .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
@@ -796,16 +816,19 @@ impl LaermampelApp {
 
             if nothing_processes {
                 let verb = if needs_cable.len() == 1 { "wirkt" } else { "wirken" };
-                let text = format!("⚠ {} {verb} nur mit VB-Cable", needs_cable.join(", "));
+                // Der Ausgang ist von Hand abgeschaltet? Dann ist nicht VB-Cable das Problem.
+                let off = self.settings.output_off;
+                let reason = if off { "erst mit einem Ausgang" } else { "nur mit VB-Cable" };
+                let text = format!("⚠ {} {verb} {reason}", needs_cable.join(", "));
                 let warning = egui::RichText::new(text).small().color(RED_TEXT);
-                if ui
-                    .add(egui::Label::new(warning).sense(egui::Sense::click()))
-                    .on_hover_text(
-                        "Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Zurückstellen: \
-                         Doppelklick auf den Knopf bzw. Fader, Limiter per Doppelklick in der Anzeige.",
-                    )
-                    .clicked()
-                {
+                let hint = if off {
+                    "Der Ausgang steht auf „aus“. Darüber „Ausgang“ anklicken und ein virtuelles Gerät wählen, \
+                     dann wirkt es auch in anderen Programmen."
+                } else {
+                    "Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Zurückstellen: \
+                     Doppelklick auf den Knopf bzw. Fader, Limiter per Doppelklick in der Anzeige."
+                };
+                if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text(hint).clicked() {
                     self.general_window_open = true;
                 }
             }
@@ -1009,7 +1032,7 @@ impl LaermampelApp {
 
     /// RNNoise arbeitet in Blöcken von 10 ms.
     fn denoise_ms(&self) -> f32 {
-        if self.settings.denoise { 10.0 } else { 0.0 }
+        if self.denoise_active() { 10.0 } else { 0.0 }
     }
 
     fn latency_details(&self) -> String {

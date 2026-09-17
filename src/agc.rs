@@ -107,6 +107,15 @@ pub fn is_virtual_device(name: &str) -> bool {
     ["vb-audio", "cable", "voicemeeter", "virtual"].iter().any(|hint| name.contains(hint))
 }
 
+/// Name eines Geräts zu einer gespeicherten ID, auch wenn es kein virtuelles ist.
+/// `None` heißt „gerade nicht da“ – direkt nach dem Windows-Start kann das noch dauern.
+pub fn output_device_name(device_id: &str) -> Option<String> {
+    let host = cpal::default_host();
+    let id = device_id.parse::<cpal::DeviceId>().ok()?;
+    let device = host.device_by_id(&id)?;
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// Nur virtuelle Geräte: auf Kopfhörer oder Lautsprecher würde das Mikrofon zurückgespielt.
 pub fn list_output_devices() -> Vec<InputDevice> {
     let host = cpal::default_host();
