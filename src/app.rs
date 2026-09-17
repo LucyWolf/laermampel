@@ -4,13 +4,12 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, ViewportCommand, ViewportId};
 
 use crate::agc::{self, ChainControl};
-use crate::apo_link::ApoLink;
-use laermampel_apo::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
 #[cfg(windows)]
 use crate::apo_setup;
 use crate::audio::{self, InputDevice, Meter, VoiceSetup};
 use crate::autostart;
 use crate::beep;
+use crate::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
 use crate::instance;
 use crate::level::{Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
@@ -44,7 +43,7 @@ fn comp_range_db(knob: f32) -> f32 {
 
 const KNOB_OFF: f32 = 0.05;
 
-/// Zustand beim Ein- oder Austragen des Audio-Filters (läuft im Hintergrund, wartet auf UAC).
+/// Zustand beim Austragen eines alten Audio-Filters (läuft im Hintergrund, wartet auf UAC).
 #[derive(Clone)]
 #[cfg_attr(not(windows), allow(dead_code))]
 enum ApoJob {
@@ -114,14 +113,13 @@ pub struct LaermampelApp {
     instance: instance::Guard,
     updater: Updater,
 
-    apo: ApoLink,
-    /// Gate über den Windows-Regler, wenn weder Filter noch VB-Cable das Mikrofon bearbeiten.
+    /// Gate und Mute über den Windows-Regler, wenn VB-Cable das Mikrofon nicht bearbeitet.
     volume_gate: VolumeGate,
     #[cfg_attr(not(windows), allow(dead_code))]
     apo_job: Arc<Mutex<ApoJob>>,
     #[cfg_attr(not(windows), allow(dead_code))]
-    /// Ob der Filter beim gewählten Mikrofon eingetragen ist, gelegentlich neu gelesen.
-    apo_installed: Option<(String, bool, bool, Instant)>,
+    /// Ist noch ein Filter aus einer älteren Version eingetragen? Gelegentlich neu gelesen.
+    leftover_filter: Option<(bool, Instant)>,
 }
 
 impl LaermampelApp {
@@ -159,10 +157,9 @@ impl LaermampelApp {
             last_logged_error: None,
             instance,
             updater: Updater::new(),
-            apo: ApoLink::new(),
             volume_gate: VolumeGate::new(),
             apo_job: Arc::new(Mutex::new(ApoJob::Idle)),
-            apo_installed: None,
+            leftover_filter: None,
         };
         // Alte Auswahl von Kopfhörern oder Lautsprechern als Ausgabe verwerfen (Rückkopplung).
         if let Some(id) = &app.settings.agc_output_id
@@ -242,12 +239,8 @@ impl LaermampelApp {
         }
     }
 
-    /// Läuft der Audio-Filter, bearbeitet er das Mikrofon; der VB-Cable-Weg reicht dann nur durch,
-    /// sonst würde alles doppelt wirken.
     fn sync_chain(&self) {
-        let settings = self.chain_settings();
-        self.apo.send(&settings);
-        self.chain_control.set(if self.apo.active() { ChainSettings::default() } else { settings });
+        self.chain_control.set(self.chain_settings());
     }
 
     /// Angezeigte Farbe; während der Vorschau immer Rot.
@@ -577,7 +570,7 @@ impl LaermampelApp {
         let running = output_name.is_some();
         let voice_db = if self.meter.is_some() { self.level.display_db } else { -120.0 };
         // Werte vom Filter, sonst vom VB-Cable-Weg; ohne beides wird gar nicht bearbeitet.
-        let feedback = self.apo.feedback().or_else(|| running.then(|| self.chain_control.feedback()));
+        let feedback = running.then(|| self.chain_control.feedback());
         let volume_gating = feedback.is_none() && gate_on(&self.settings);
         let gate_open = gate_on(&self.settings)
             && match feedback {
@@ -589,14 +582,15 @@ impl LaermampelApp {
             voice_db
         } else if let Some(f) = feedback {
             f.out_level_db
-        } else if volume_gating {
-            voice_db - self.volume_gate.attenuation_db()
+        } else if volume_gating && !gate_open {
+            // Wie bei Voicemeeter: ist das Gate zu, gibt es keinen Ausschlag mehr.
+            -120.0
         } else {
             voice_db
         };
         let s = &self.settings;
-        // Das Gate braucht keinen Filter mehr, das macht notfalls der Windows-Regler.
-        let wants_processing = s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.mic_muted || s.agc_ceiling_db < 0.0;
+        // Gate und Mute gehen notfalls über den Windows-Regler; Comp., Fader und Limiter nur mit VB-Cable.
+        let wants_processing = s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.agc_ceiling_db < 0.0;
         let nothing_processes = wants_processing && feedback.is_none();
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
@@ -718,10 +712,9 @@ impl LaermampelApp {
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 // Gelb und Rot nur zeigen, solange der Warnton an ist.
-                let gate_line = gate_on(s).then_some(s.gate_threshold_db);
                 let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
                 let muted = s.mic_muted;
-                strip::level_meter(ui, meter_db, muted, gate_line, &mut s.agc_ceiling_db, thresholds, 230.0);
+                strip::level_meter(ui, meter_db, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
@@ -742,10 +735,17 @@ impl LaermampelApp {
             });
 
             if nothing_processes {
-                self.filter_prompt_ui(ui);
+                let warning = egui::RichText::new("⚠ Comp., Fader, Limiter: nur mit VB-Cable").small().color(RED_TEXT);
+                if ui
+                    .add(egui::Label::new(warning).sense(egui::Sense::click()))
+                    .on_hover_text("Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Öffnet die Einstellungen.")
+                    .clicked()
+                {
+                    self.general_window_open = true;
+                }
             }
             // Fehlendes VB-Cable ist kein Fehler, nur kaputte Einstellungen werden gemeldet.
-            else if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) && !self.apo.active() {
+            else if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) {
                 let warning = egui::RichText::new("⚠ Ausgabe prüfen").small().color(RED_TEXT);
                 if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text("Öffnet die Einstellungen").clicked() {
                     self.general_window_open = true;
@@ -767,12 +767,10 @@ impl LaermampelApp {
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
-        if self.apo.active() {
-            ui.colored_label(strip::ACCENT, "Audio-Filter aktiv: Fader und Mute wirken direkt am Mikrofon.");
-        } else if output_error.as_deref() == Some(agc::VB_CABLE_MISSING) {
+        if output_error.as_deref() == Some(agc::VB_CABLE_MISSING) {
             ui.label(
-                "VB-Cable ist nicht installiert. Nur nötig, wenn Comp., Gate und Limiter auch in anderen \
-                 Programmen wirken sollen.",
+                "VB-Cable ist nicht installiert. Gate und Mute gehen auch ohne; Comp., Fader und Limiter \
+                 wirken in anderen Programmen nur mit VB-Cable.",
             );
             ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
         } else if let Some(err) = &output_error {
@@ -844,139 +842,37 @@ impl LaermampelApp {
         }
     }
 
+    /// Nur sichtbar, wenn aus einer älteren Version noch ein Audio-Filter eingetragen ist.
     #[cfg(windows)]
-    fn apo_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Mikrofon-Filter").id_salt("apo").show(ui, |ui| {
-            ui.label(
-                "Trägt einen Audio-Filter direkt bei deinem Mikrofon ein. Dann wirken Comp., Gate, Fader, \
-                 Limiter und Mute in allen Programmen mit deinem normalen Mikrofon, ohne VB-Cable.",
-            );
-
-            let Some(guid) = self.settings.device_id.as_deref().and_then(apo_setup::endpoint_guid) else {
-                ui.colored_label(RED_TEXT, "Erst oben ein Mikrofon auswählen.");
-                return;
-            };
-
-            let (installed, vendor) = self.apo_state(&guid);
-
-            let job = self.apo_job.lock().map(|j| j.clone()).unwrap_or(ApoJob::Idle);
-            match &job {
-                ApoJob::Running(what) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(*what);
-                    });
-                    return;
-                }
-                ApoJob::Failed(e) => {
-                    ui.colored_label(RED_TEXT, e);
-                }
-                ApoJob::Idle => {}
-            }
-
-            if installed && self.apo.outdated() {
-                ui.colored_label(
-                    Color32::from_rgb(245, 190, 20),
-                    "Der eingerichtete Filter ist von einer älteren Version und kann Gate und Comp. noch nicht.",
-                );
-                if ui.button("Filter aktualisieren").clicked() {
-                    self.start_apo_job("Aktualisiere Filter, der Ton ist kurz weg …", format!("--apo install {guid}"));
-                }
-            } else if installed {
-                if self.apo.active() {
-                    ui.colored_label(strip::ACCENT, "Eingetragen und aktiv.");
-                } else {
-                    ui.colored_label(
-                        Color32::from_rgb(245, 190, 20),
-                        "Eingetragen, aber Windows nutzt den Filter nicht. Prüfe in den Windows-Soundeinstellungen \
-                         beim Mikrofon, dass „Audioverbesserungen“ an sind. Hilft das nicht, unterstützt der \
-                         Treiber diesen Weg nicht.",
-                    );
-                }
-                if ui.button("Filter entfernen").clicked() {
-                    self.start_apo_job("Entferne Filter, der Ton ist kurz weg …", format!("--apo uninstall {guid}"));
-                }
-            } else {
-                if vendor {
-                    ui.colored_label(
-                        Color32::from_rgb(245, 190, 20),
-                        "Das Mikrofon hat schon einen Filter vom Hersteller. Der wird für den Test ersetzt, \
-                         „Entfernen“ stellt ihn wieder her.",
-                    );
-                }
-                ui.label("Windows fragt nach Adminrechten, der Ton ist beim Einrichten ein paar Sekunden weg.");
-                if ui.button("Filter einrichten").clicked() {
-                    self.start_apo_job("Richte Filter ein, der Ton ist kurz weg …", format!("--apo install {guid}"));
-                }
-            }
-        });
-    }
-
-    /// Im Kanalzug, wenn Gate & Co. eingestellt sind, aber nichts das Mikrofon bearbeitet:
-    /// direkt der Knopf zum Einrichten des Filters.
-    #[cfg(windows)]
-    fn filter_prompt_ui(&mut self, ui: &mut egui::Ui) {
-        let small_red = |text: &str| egui::RichText::new(text).small().color(RED_TEXT);
-        let Some(guid) = self.settings.device_id.as_deref().and_then(apo_setup::endpoint_guid) else {
-            ui.label(small_red("⚠ Erst ein Mikrofon wählen"));
-            return;
-        };
-        let job = self.apo_job.lock().map(|j| j.clone()).unwrap_or(ApoJob::Idle);
-        if let ApoJob::Running(_) = job {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(egui::RichText::new("Filter wird eingerichtet …").small());
-            });
-            return;
-        }
-        if let ApoJob::Failed(e) = &job {
-            ui.label(small_red(e));
-        }
-
-        let (installed, _) = self.apo_state(&guid);
-        if installed && !self.apo.outdated() {
-            // Eingetragen, aber Windows lädt ihn nicht: Einstellungen zeigen, woran es liegen kann.
-            if ui
-                .add(egui::Label::new(small_red("⚠ Filter eingetragen, aber nicht aktiv")).sense(egui::Sense::click()))
-                .on_hover_text("Öffnet die Einstellungen mit Hinweisen")
-                .clicked()
-            {
-                self.general_window_open = true;
-            }
-            return;
-        }
-
-        let text = if installed { "Filter aktualisieren" } else { "Filter einrichten" };
-        let button = egui::Button::new(egui::RichText::new(text).color(Color32::WHITE).strong()).fill(Color32::from_rgb(70, 110, 170));
-        if ui
-            .add_sized([ui.available_width(), 26.0], button)
-            .on_hover_text(
-                "Damit Comp., Gate, Fader, Limiter und Mute in Discord, Spielen usw. wirken, ohne VB-Cable. \
-                 Windows fragt einmal nach Adminrechten, der Ton ist kurz weg.",
-            )
-            .clicked()
-        {
-            let what = if installed { "Aktualisiere Filter, der Ton ist kurz weg …" } else { "Richte Filter ein, der Ton ist kurz weg …" };
-            self.start_apo_job(what, format!("--apo install {guid}"));
-        }
-    }
-
-    #[cfg(not(windows))]
-    fn filter_prompt_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("⚠ Braucht VB-Cable").small().color(RED_TEXT));
-    }
-
-    /// Ob der Filter beim Mikrofon eingetragen ist und ob es einen Hersteller-Filter gibt.
-    /// Aus der Registry, höchstens alle 2 Sekunden neu gelesen.
-    #[cfg(windows)]
-    fn apo_state(&mut self, guid: &str) -> (bool, bool) {
-        let stale = self.apo_installed.as_ref().is_none_or(|(g, _, _, t)| g != guid || t.elapsed() > Duration::from_secs(2));
+    fn leftover_filter_ui(&mut self, ui: &mut egui::Ui) {
+        let stale = self.leftover_filter.is_none_or(|(_, t)| t.elapsed() > Duration::from_secs(5));
         if stale {
-            self.apo_installed =
-                Some((guid.to_string(), apo_setup::is_installed(guid), apo_setup::has_vendor_effect(guid), Instant::now()));
+            self.leftover_filter = Some((apo_setup::any_installed(), Instant::now()));
         }
-        let (_, installed, vendor, _) = self.apo_installed.clone().expect("gerade gesetzt");
-        (installed, vendor)
+        let installed = self.leftover_filter.is_some_and(|(installed, _)| installed);
+        let job = self.apo_job.lock().map(|j| j.clone()).unwrap_or(ApoJob::Idle);
+        if !installed && !matches!(job, ApoJob::Running(_)) {
+            return;
+        }
+        ui.separator();
+        match job {
+            ApoJob::Running(what) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(what);
+                });
+            }
+            ApoJob::Failed(e) => {
+                ui.colored_label(RED_TEXT, e);
+            }
+            ApoJob::Idle => {}
+        }
+        if installed {
+            ui.label("Aus einer älteren Version ist noch ein Mikrofon-Filter eingetragen.");
+            if ui.button("Entfernen").clicked() {
+                self.start_apo_job("Entferne Filter, der Ton ist kurz weg …", "--apo uninstall-all".to_string());
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -985,7 +881,7 @@ impl LaermampelApp {
         if let Ok(mut j) = job.lock() {
             *j = ApoJob::Running(what);
         }
-        self.apo_installed = None;
+        self.leftover_filter = None;
         log!("APO: starte {args}");
         std::thread::spawn(move || {
             let result = apo_setup::run_elevated(&args);
@@ -1014,7 +910,7 @@ impl LaermampelApp {
             .show(ui, |ui| self.channel_details_ui(ui));
 
         #[cfg(windows)]
-        self.apo_ui(ui);
+        self.leftover_filter_ui(ui);
 
         if autostart::SUPPORTED {
             ui.separator();
@@ -1056,24 +952,20 @@ impl eframe::App for LaermampelApp {
             self.restart_meter();
         }
 
-        self.apo.tick();
         let meter_input = self.meter.as_ref().and_then(Meter::take_peak_db);
         // Mit Filter bekommt auch die Lärmampel schon bearbeitetes Audio (z.B. stumm),
         // deshalb misst dann der Filter selbst die echte Lautstärke.
         // Bearbeitet weder Filter noch VB-Cable das Mikrofon, macht der Windows-Regler das Gate.
         let chain_running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
-        let volume_gate_on = gate_on(&self.settings) && !self.apo.active() && !chain_running;
+        let volume_gate_on = gate_on(&self.settings) && !chain_running;
+        let volume_mute_on = self.settings.mic_muted && !chain_running;
         let gate_params = GateParams {
             threshold_db: self.settings.gate_threshold_db,
             range_db: self.settings.gate_range_db,
             hold_ms: self.settings.gate_hold_ms,
         };
         let device_id = self.settings.device_id.clone();
-        let real_input = self.volume_gate.update(device_id.as_deref(), volume_gate_on, meter_input, &gate_params);
-        let input = match self.apo.feedback() {
-            Some(feedback) => Some(feedback.input_level_db),
-            None => real_input,
-        };
+        let input = self.volume_gate.update(device_id.as_deref(), volume_gate_on, volume_mute_on, meter_input, &gate_params);
         let became_red = self.level.update(input, dt, now, &self.settings);
         if became_red {
             self.red_count += 1;

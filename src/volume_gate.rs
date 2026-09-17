@@ -1,4 +1,4 @@
-//! Gate über den Mikrofon-Regler von Windows: ohne Filter, ohne VB-Cable, ohne Adminrechte.
+//! Gate und Mute über den Mikrofon-Regler von Windows: ohne VB-Cable, ohne Adminrechte.
 //!
 //! Unter der Schwelle wird der Windows-Regler des Mikrofons heruntergezogen, das gilt für alle
 //! Programme. Ganz stumm geht nicht, sonst hört die Lärmampel selbst nicht mehr, wann man wieder
@@ -20,6 +20,10 @@ const CALIBRATION_END: Duration = Duration::from_millis(350);
 const MAX_BACKOFF_DB: f32 = 60.0;
 /// Glättung des Pegels, aus dem der Wert kurz vor dem Zugehen stammt.
 const SMOOTHING: f32 = 0.2;
+/// Das Gate entscheidet über einen kurz geglätteten Pegel, sonst reißen Rauschspitzen es auf.
+const DECISION_SMOOTHING: f32 = 0.25;
+/// So weit über der Schwelle geht es sofort auf, ohne auf die Glättung zu warten (Wortanfang).
+const INSTANT_OPEN_DB: f32 = 10.0;
 
 pub struct GateParams {
     pub threshold_db: f32,
@@ -33,6 +37,8 @@ pub struct GateParams {
 struct Leftover {
     endpoint_id: String,
     original_db: f32,
+    #[serde(default)]
+    muted: bool,
 }
 
 fn leftover_path() -> Option<PathBuf> {
@@ -63,6 +69,10 @@ pub struct VolumeGate {
     measured_attenuation_db: Option<f32>,
     /// Um so viel wird der Regler weniger weit heruntergezogen, damit die Lärmampel noch hört.
     backoff_db: f32,
+    /// Geglättete Leistung für die Auf/Zu-Entscheidung.
+    decision_power: Option<f32>,
+    /// Hat die Lärmampel das Mikrofon in Windows stumm geschaltet?
+    muted: bool,
 }
 
 impl VolumeGate {
@@ -83,6 +93,8 @@ impl VolumeGate {
             calibration_count: 0,
             measured_attenuation_db: None,
             backoff_db: 0.0,
+            decision_power: None,
+            muted: false,
         };
         gate.restore_leftover();
         gate
@@ -109,18 +121,44 @@ impl VolumeGate {
 
     /// Einmal pro Bild. `device_id` ist die cpal-ID, `measured_db` der gerade gemessene Pegel
     /// (mit abgesenktem Regler). Gibt den echten Pegel zurück, also mit herausgerechneter Absenkung.
-    pub fn update(&mut self, device_id: Option<&str>, enabled: bool, measured_db: Option<f32>, params: &GateParams) -> Option<f32> {
+    pub fn update(
+        &mut self,
+        device_id: Option<&str>,
+        gate: bool,
+        mute: bool,
+        measured_db: Option<f32>,
+        params: &GateParams,
+    ) -> Option<f32> {
         let real_db = measured_db.map(|db| db + self.attenuation_db());
 
         let endpoint_id = device_id.and_then(|id| id.strip_prefix("wasapi:")).map(str::to_string);
-        if !enabled || endpoint_id != self.endpoint_id {
+        if endpoint_id != self.endpoint_id {
             self.release();
             self.endpoint_id = endpoint_id;
         }
-        if !enabled {
+        if !gate && !mute {
+            self.release();
             return real_db;
         }
         if !self.has_volume() && !self.attach() {
+            return real_db;
+        }
+
+        // Mute: Windows schaltet das Mikrofon für alle Programme stumm, auch für die Lärmampel.
+        if mute != self.muted {
+            self.set_mute(mute);
+            self.muted = mute;
+            self.remember_leftover();
+        }
+        if !gate {
+            if !self.open {
+                self.open = true;
+                self.below_since = None;
+                let original = self.original_db;
+                self.write_db(original);
+                self.applied_db = original;
+                self.remember_leftover();
+            }
             return real_db;
         }
 
@@ -146,13 +184,21 @@ impl VolumeGate {
         }
 
         if let Some(level) = real_db {
-            if level > params.threshold_db {
+            let power = 10f32.powf(level / 10.0);
+            let smoothed = match self.decision_power {
+                Some(previous) => previous + (power - previous) * DECISION_SMOOTHING,
+                None => power,
+            };
+            self.decision_power = Some(smoothed);
+            let decision_db = 10.0 * smoothed.max(1e-12).log10();
+
+            if decision_db > params.threshold_db || level > params.threshold_db + INSTANT_OPEN_DB {
                 if !self.open {
                     self.closed_at = None;
                 }
                 self.open = true;
                 self.below_since = None;
-            } else if level < params.threshold_db - HYSTERESIS_DB {
+            } else if decision_db < params.threshold_db - HYSTERESIS_DB {
                 let since = *self.below_since.get_or_insert_with(Instant::now);
                 if self.open && since.elapsed() >= Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
                     self.open = false;
@@ -165,7 +211,7 @@ impl VolumeGate {
         if (target - self.applied_db).abs() > 0.05 {
             self.write_db(target);
             self.applied_db = target;
-            self.remember_leftover(!self.open);
+            self.remember_leftover();
         }
         real_db
     }
@@ -222,20 +268,26 @@ impl VolumeGate {
             let original = self.original_db;
             self.write_db(original);
         }
+        if self.muted {
+            self.set_mute(false);
+            self.muted = false;
+        }
         #[cfg(windows)]
         {
             self.volume = None;
         }
         self.open = true;
         self.below_since = None;
-        self.remember_leftover(false);
+        self.decision_power = None;
+        self.remember_leftover();
     }
 
-    fn remember_leftover(&self, closed: bool) {
+    fn remember_leftover(&self) {
         let Some(path) = leftover_path() else { return };
-        match (&self.endpoint_id, closed) {
+        let touched = self.has_volume() && (self.muted || (self.applied_db - self.original_db).abs() > 0.05);
+        match (&self.endpoint_id, touched) {
             (Some(id), true) => {
-                let leftover = Leftover { endpoint_id: id.clone(), original_db: self.original_db };
+                let leftover = Leftover { endpoint_id: id.clone(), original_db: self.original_db, muted: self.muted };
                 if let Ok(json) = serde_json::to_string(&leftover) {
                     if let Some(dir) = path.parent() {
                         let _ = std::fs::create_dir_all(dir);
@@ -257,7 +309,10 @@ impl VolumeGate {
         #[cfg(windows)]
         if let Some(volume) = win::Volume::open(&leftover.endpoint_id) {
             volume.set_db(leftover.original_db);
-            log!("Gate: Mikrofon-Lautstärke nach Absturz auf {:.1} dB zurückgesetzt", leftover.original_db);
+            if leftover.muted {
+                volume.set_mute(false);
+            }
+            log!("Gate: Mikrofon nach Absturz zurückgesetzt ({:.1} dB, Stummschaltung aufgehoben)", leftover.original_db);
         }
         #[cfg(not(windows))]
         let _ = leftover;
@@ -299,6 +354,15 @@ impl VolumeGate {
         None
     }
 
+    fn set_mute(&self, mute: bool) {
+        #[cfg(windows)]
+        if let Some(volume) = &self.volume {
+            volume.set_mute(mute);
+        }
+        #[cfg(not(windows))]
+        let _ = mute;
+    }
+
     fn write_db(&self, db: f32) {
         #[cfg(windows)]
         if let Some(volume) = &self.volume {
@@ -337,6 +401,12 @@ mod win {
 
         pub fn get_db(&self) -> Option<f32> {
             unsafe { self.endpoint.GetMasterVolumeLevel().ok() }
+        }
+
+        pub fn set_mute(&self, mute: bool) {
+            unsafe {
+                let _ = self.endpoint.SetMute(mute, std::ptr::null());
+            }
         }
 
         pub fn set_db(&self, db: f32) {

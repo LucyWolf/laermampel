@@ -34,8 +34,8 @@ jobs:
             exit 1
           fi
 
-      - run: cargo test --release --workspace
-      - run: cargo build --release --workspace
+      - run: cargo test --release
+      - run: cargo build --release
 
       - name: Installer bauen
         shell: pwsh
@@ -53,7 +53,6 @@ jobs:
           name: laermampel-windows
           path: |
             target/release/laermampel.exe
-            target/release/laermampel_apo.dll
             dist/Laermampel-Setup-*.exe
 
       - name: Release

@@ -5,12 +5,12 @@
 #[macro_use]
 mod log;
 mod agc;
-mod apo_link;
 mod apo_setup;
 mod app;
 mod audio;
 mod autostart;
 mod beep;
+mod dsp;
 mod instance;
 mod level;
 mod placement;

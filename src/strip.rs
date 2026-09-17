@@ -159,7 +159,6 @@ pub fn level_meter(
     ui: &mut Ui,
     voice_db: f32,
     muted: bool,
-    gate_threshold_db: Option<f32>,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
@@ -273,12 +272,6 @@ pub fn level_meter(
             let segment = Rect::from_min_max(pos2(column.left(), y1 - segment_height + 1.0), pos2(column.right(), y1));
             painter.rect_filled(segment, CornerRadius::ZERO, if db <= voice_db { color } else { color.gamma_multiply(0.12) });
         }
-    }
-
-    // Gate-Schwelle als dünne weiße Linie: liegt das Grundrauschen darunter, geht das Gate zu.
-    if let Some(db) = gate_threshold_db {
-        let y = to_y(db);
-        painter.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0, Color32::from_white_alpha(200)));
     }
 
     let limit_active = *limit_db < LIMIT_OFF_DB;

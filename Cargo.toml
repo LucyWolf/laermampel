@@ -1,13 +1,9 @@
-[workspace]
-members = ["apo"]
-
 [package]
 name = "laermampel"
 version = "0.3.27"
 edition = "2024"
 
 [dependencies]
-laermampel-apo = { path = "apo" }
 cpal = "0.18"
 directories = "6"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

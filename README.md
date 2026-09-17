@@ -39,16 +39,16 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
-- **Gate** (−100 bis 0 dB): Schwelle direkt in dB, ganz links (−100) ist aus. Unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. Die weiße Linie in der Pegelanzeige zeigt die Schwelle, die Lampe am Knopf, ob es gerade offen ist.
-  Ohne Filter und VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows herunter (gilt für alle Programme, ohne Einrichten). Wie stark das Gerät dabei wirklich absenkt, wird gemessen und ausgeglichen. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
+- **Gate** (−100 bis 0 dB): Schwelle direkt in dB, ganz links (−100) ist aus. Unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. Ist das Gate zu, zeigt die Pegelanzeige keinen Ausschlag mehr (wie bei Voicemeeter); die Lampe am Knopf zeigt, ob es gerade offen ist.
+  Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows herunter (gilt für alle Programme, ohne Einrichten). Wie stark das Gerät dabei wirklich absenkt, wird gemessen und ausgeglichen. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
 - **Pegelanzeige:** ein Balken (ein Mikrofon ist mono). Zeigt, was nach Gate & Co. übrig bleibt; bei Mute grau deine Stimme.
   - Ist **Ton** an, gibt es eine **gelbe** und eine **rote** Linie mit Pfeil am Rand für die Ampel-Schwellen, zum Ziehen.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB, Anzeige −100 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
-- **Mute:** Mikrofon für andere stumm. Die Pegelanzeige wird grau, schlägt aber weiter aus. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
-- Comp., Gate, Fader, Limiter und Mute brauchen den Filter („Ohne VB-Cable“) oder VB-Cable. Ohne beides zeigt der Kanalzug den Knopf „Filter einrichten“.
+- **Mute:** Mikrofon für andere stumm, die Pegelanzeige wird grau. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
+- Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Fader und Limiter wirken in anderen Programmen nur mit VB-Cable.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:
@@ -58,16 +58,6 @@ Einrichten:
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
-### Mikrofon-Filter (ohne VB-Cable)
-
-Im Kanalzug über „Filter einrichten“ (oder ⚙ → „Mikrofon-Filter“) lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
-so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mit dem normalen Mikrofon.
-
-- Braucht einmal Adminrechte; der Windows-Audiodienst startet dabei neu (Ton ein paar Sekunden weg).
-- Die Originalwerte des Mikrofons werden gesichert, „Filter entfernen“ und die Deinstallation stellen sie wieder her.
-- Gate, Comp., Fader, Limiter und Mute laufen dann im Filter, derselbe Code wie beim Weg über VB-Cable.
-- Nicht jeder Treiber lädt solche Filter; dann zeigt die Lärmampel „Eingetragen, aber Windows nutzt den Filter nicht“.
-- Notfalls von Hand austragen: `laermampel.exe --apo uninstall-all` als Administrator ausführen.
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
 Bei Problemen hilft die Log-Datei `%LOCALAPPDATA%\\LucyWolf\\Laermampel\\data\\laermampel.log`
@@ -100,3 +90,6 @@ GitHub Actions baut dann Installer und `laermampel.exe` und legt das Release an.
 Versionsschema: nur die letzte Stelle wird erhöht (`0.3.1`, `0.3.2` …).
 Nach `.99` geht es mit der mittleren Stelle weiter: `0.3.99` → `0.4.0`.
 Der Build prüft, dass der Tag zur Version in `Cargo.toml` passt und die letzte Stelle nicht über 99 liegt.
+
+Frühere Versionen konnten einen Audio-Filter (APO) beim Mikrofon eintragen. Ist davon noch etwas übrig,
+bietet ⚙ „Entfernen“ an; die Deinstallation trägt ihn ebenfalls aus. Von Hand: `laermampel.exe --apo uninstall-all` als Administrator.

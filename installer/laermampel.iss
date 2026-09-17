@@ -42,8 +42,6 @@ Name: "{autodesktop}\Lärmampel"; Filename: "{app}\laermampel.exe"; Tasks: deskt
 
 [Files]
 Source: "..\target\release\laermampel.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Audio-Filter für „Ohne VB-Cable“. Wird erst beim Einrichten in der App nach Programme kopiert.
-Source: "..\target\release\laermampel_apo.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
 ; Derselbe Wert, den auch der Schalter in den Einstellungen setzt.
@@ -55,7 +53,7 @@ Filename: "{app}\laermampel.exe"; Description: "Lärmampel jetzt starten"; Flags
 Filename: "{app}\laermampel.exe"; Parameters: "--nach-update"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
-; Zuerst einen eingetragenen Audio-Filter wieder austragen (fragt nur dann nach Adminrechten).
+; Einen Audio-Filter aus älteren Versionen wieder austragen (fragt nur dann nach Adminrechten).
 Filename: "{app}\laermampel.exe"; Parameters: "--apo-elevate uninstall-all"; Flags: runhidden waituntilterminated; RunOnceId: "LaermampelFilterEntfernen"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM laermampel.exe"; Flags: runhidden; RunOnceId: "LaermampelBeenden"
 
