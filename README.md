@@ -6,7 +6,6 @@ Gedacht für geschlossene Kopfhörer ohne Monitoring, wo man die eigene Stimme k
 - Kleiner Punkt oder Leiste mit Pegel, immer im Vordergrund, Mausklicks gehen durch
 - Frei platzierbar: Monitor 1, 2, 3 …, oben oder unten, jeweils links, Mitte oder rechts
 - Grün, Gelb, Rot, reagiert sofort und klingt langsam ab
-- Einlernen: ein paar Sekunden normal reden, Gelb und Rot werden relativ dazu gesetzt
 - Einstellbar: Schwellen, Anstieg, Abklingen, Haltezeit, Größe, Abstand zum Rand, Helligkeit (Grün extra), optionaler Warnton
 - Symbol im Infobereich neben der Uhr, zeigt ebenfalls die Ampelfarbe
 - Liest das Mikrofon parallel zu Discord und Co., nimmt nichts weg

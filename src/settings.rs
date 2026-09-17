@@ -18,9 +18,6 @@ pub struct Settings {
     /// Schwellen in dBFS.
     pub yellow_db: f32,
     pub red_db: f32,
-    /// Abstand zur eingelernten normalen Stimme.
-    pub yellow_offset_db: f32,
-    pub red_offset_db: f32,
 
     pub attack_ms: f32,
     pub release_ms: f32,
@@ -70,8 +67,6 @@ impl Default for Settings {
             device_id: None,
             yellow_db: -24.0,
             red_db: -18.0,
-            yellow_offset_db: 6.0,
-            red_offset_db: 10.0,
             attack_ms: 20.0,
             release_ms: 400.0,
             hold_ms: 1500.0,

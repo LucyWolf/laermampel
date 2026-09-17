@@ -11,7 +11,7 @@ use crate::audio::{self, InputDevice, Meter, VoiceSetup};
 use crate::autostart;
 use crate::beep;
 use crate::instance;
-use crate::level::{Calibration, Level, Zone};
+use crate::level::{Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
 use crate::settings::{self, DisplayMode, Settings};
 use crate::strip;
@@ -88,8 +88,6 @@ pub struct LaermampelApp {
     last_tick: Instant,
     red_count: u32,
 
-    calibration: Option<Calibration>,
-    calibration_message: Option<String>,
 
     monitors: Vec<Monitor>,
     last_monitor_scan: Instant,
@@ -138,8 +136,6 @@ impl LaermampelApp {
             level: Level::new(),
             last_tick: Instant::now(),
             red_count: 0,
-            calibration: None,
-            calibration_message: None,
             monitors: placement::monitors(),
             last_monitor_scan: Instant::now(),
             applied_rect: None,
@@ -267,16 +263,6 @@ impl LaermampelApp {
         if self.tray.is_none() {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
-    }
-
-    fn apply_calibration(&mut self, normal_db: f32) {
-        let s = &mut self.settings;
-        s.yellow_db = (normal_db + s.yellow_offset_db).min(BAR_MAX_DB);
-        s.red_db = (normal_db + s.red_offset_db).min(BAR_MAX_DB);
-        self.calibration_message = Some(format!(
-            "Normale Stimme: {normal_db:.1} dB → Gelb ab {:.1}, Rot ab {:.1}",
-            s.yellow_db, s.red_db
-        ));
     }
 
     fn update_placement(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -810,29 +796,10 @@ impl LaermampelApp {
         // über die normale Fehlerbehandlung von selbst neu.
     }
 
-    fn calibration_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Einlernen");
-        ui.label("Rede ein paar Sekunden in normaler Lautstärke. Gelb und Rot werden dann relativ dazu gesetzt.");
-        if let Some(cal) = &self.calibration {
-            ui.add(egui::ProgressBar::new(cal.progress()).text("Rede jetzt normal …"));
-        } else if ui.add_enabled(self.meter.is_some(), egui::Button::new("🎤 Einlernen starten")).clicked() {
-            self.calibration = Some(Calibration::new());
-            self.calibration_message = None;
-        }
-        if let Some(msg) = &self.calibration_message {
-            ui.label(msg);
-        }
-        let s = &mut self.settings;
-        ui.add(egui::Slider::new(&mut s.yellow_offset_db, 1.0..=20.0).text("Gelb über normal").suffix(" dB"));
-        ui.add(egui::Slider::new(&mut s.red_offset_db, 1.0..=30.0).text("Rot über normal").suffix(" dB"));
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         self.version_ui(ui);
         ui.separator();
         self.strip_ui(ui);
-        ui.separator();
-        self.calibration_ui(ui);
         ui.separator();
 
         if autostart::SUPPORTED {
@@ -886,17 +853,6 @@ impl eframe::App for LaermampelApp {
             self.red_count += 1;
             if self.settings.beep_enabled {
                 beep::play(self.settings.beep_volume);
-            }
-        }
-
-        if let (Some(cal), Some(db)) = (&mut self.calibration, input) {
-            cal.push(db);
-        }
-        if self.calibration.as_ref().is_some_and(Calibration::done) {
-            let cal = self.calibration.take().expect("checked above");
-            match cal.result() {
-                Ok(normal) => self.apply_calibration(normal),
-                Err(e) => self.calibration_message = Some(e.to_string()),
             }
         }
 
