@@ -160,6 +160,13 @@ impl LaermampelApp {
             apo_job: Arc::new(Mutex::new(ApoJob::Idle)),
             apo_installed: None,
         };
+        // Alte Auswahl von Kopfhörern oder Lautsprechern als Ausgabe verwerfen (Rückkopplung).
+        if let Some(id) = &app.settings.agc_output_id
+            && !app.output_devices.iter().any(|d| &d.id == id)
+        {
+            log!("Ausgabe-Auswahl verworfen, kein virtuelles Gerät: {id}");
+            app.settings.agc_output_id = None;
+        }
         app.sync_agc_params();
         app.restart_meter();
         app.updater.check(ctx);
@@ -697,7 +704,8 @@ impl LaermampelApp {
                 });
             });
 
-            if output_error.is_some() && !self.apo.active() {
+            // Fehlendes VB-Cable ist kein Fehler, nur kaputte Einstellungen werden gemeldet.
+            if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) && !self.apo.active() {
                 let warning = egui::RichText::new("⚠ Ausgabe prüfen").small().color(RED_TEXT);
                 if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text("Öffnet die Einstellungen").clicked() {
                     self.general_window_open = true;
@@ -721,9 +729,14 @@ impl LaermampelApp {
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         if self.apo.active() {
             ui.colored_label(strip::ACCENT, "Audio-Filter aktiv: Fader und Mute wirken direkt am Mikrofon.");
+        } else if output_error.as_deref() == Some(agc::VB_CABLE_MISSING) {
+            ui.label(
+                "VB-Cable ist nicht installiert. Nur nötig, wenn Comp., Gate und Limiter auch in anderen \
+                 Programmen wirken sollen.",
+            );
+            ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
         } else if let Some(err) = &output_error {
             ui.colored_label(RED_TEXT, err);
-            ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
         } else if output_name.is_some() {
             ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
         }
@@ -892,7 +905,7 @@ impl LaermampelApp {
         ui.separator();
         egui::CollapsingHeader::new("Kanalzug: Ausgabe und Feineinstellungen")
             .id_salt("strip_details")
-            .default_open(self.meter.as_ref().is_some_and(|m| m.agc_error.is_some()))
+            .default_open(self.meter.as_ref().and_then(|m| m.agc_error.as_deref()).is_some_and(|e| e != agc::VB_CABLE_MISSING))
             .show(ui, |ui| self.channel_details_ui(ui));
 
         #[cfg(windows)]

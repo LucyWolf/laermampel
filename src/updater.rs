@@ -4,10 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui;
-use serde::Deserialize;
+use ureq::ResponseExt;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/LucyWolf/laermampel/releases/latest";
+const LATEST_RELEASE_PAGE: &str = "https://github.com/LucyWolf/laermampel/releases/latest";
+const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/LucyWolf/laermampel/releases/download";
 const SETUP_PREFIX: &str = "Laermampel-Setup-";
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Startargument der neuen Version nach einem Update.
@@ -17,13 +18,13 @@ pub const RESTART_ARG: &str = "--nach-update";
 pub struct Release {
     pub version: semver::Version,
     pub page_url: String,
-    download_url: Option<String>,
+    setup_url: String,
 }
 
 impl Release {
     /// Installieren geht nur unter Windows, woanders gibt es nur den Link.
     pub fn installable(&self) -> bool {
-        cfg!(windows) && self.download_url.is_some()
+        cfg!(windows)
     }
 }
 
@@ -37,19 +38,6 @@ pub enum Status {
     /// Installer läuft, dieses Programm beendet sich gleich; der Installer startet die neue Version.
     Installed(Release),
     Failed(String),
-}
-
-#[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    html_url: String,
-    assets: Vec<GithubAsset>,
-}
-
-#[derive(Deserialize)]
-struct GithubAsset {
-    name: String,
-    browser_download_url: String,
 }
 
 pub struct Updater {
@@ -124,33 +112,35 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// Neueste Version über die normale Release-Seite: `…/releases/latest` leitet auf `…/tag/vX.Y.Z` um.
+/// Die GitHub-API wäre ohne Anmeldung auf 60 Abfragen pro Stunde begrenzt (dann HTTP 403).
 fn fetch_latest() -> Result<Release, String> {
-    let release: GithubRelease = agent()
-        .get(LATEST_RELEASE_URL)
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| e.to_string())?
-        .body_mut()
-        .read_json()
-        .map_err(|e| e.to_string())?;
+    let response = agent().get(LATEST_RELEASE_PAGE).call().map_err(describe_http_error)?;
+    let page_url = response.get_uri().to_string();
+    let tag = page_url
+        .rsplit_once("/tag/")
+        .map(|(_, tag)| tag.trim_end_matches('/').to_string())
+        .ok_or_else(|| "Noch kein Release gefunden".to_string())?;
+    let version = semver::Version::parse(tag.trim_start_matches('v'))
+        .map_err(|_| format!("Unbekanntes Versionsformat: {tag}"))?;
+    let setup_url = format!("{RELEASE_DOWNLOAD_BASE}/{tag}/{SETUP_PREFIX}{version}.exe");
+    Ok(Release { version, page_url, setup_url })
+}
 
-    let version = semver::Version::parse(release.tag_name.trim_start_matches('v'))
-        .map_err(|_| format!("Unbekanntes Versionsformat: {}", release.tag_name))?;
-    let download_url = release
-        .assets
-        .into_iter()
-        .find(|a| a.name.starts_with(SETUP_PREFIX) && a.name.ends_with(".exe"))
-        .map(|a| a.browser_download_url);
-
-    Ok(Release { version, page_url: release.html_url, download_url })
+fn describe_http_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::StatusCode(403 | 429) => "GitHub lehnt gerade zu viele Anfragen ab, später nochmal versuchen".to_string(),
+        ureq::Error::StatusCode(404) => "Datei bei GitHub nicht gefunden".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn download_and_run_setup(release: &Release) -> Result<(), String> {
-    let url = release.download_url.as_deref().ok_or("Kein Installer im Release")?;
+    let url = &release.setup_url;
     let bytes = agent()
         .get(url)
         .call()
-        .map_err(|e| e.to_string())?
+        .map_err(describe_http_error)?
         .body_mut()
         .with_config()
         .limit(MAX_DOWNLOAD_BYTES)
