@@ -168,6 +168,8 @@ pub fn level_meter(
     voice_db: f32,
     muted: bool,
     gate: Option<(f32, bool)>,
+    // Ohne Ausgang kann der Limiter nichts begrenzen; dann wird er grau gezeichnet.
+    limit_running: bool,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
@@ -308,7 +310,7 @@ pub fn level_meter(
         // Der Limiter liegt über der ganzen Anzeige.
         let column = inner;
         let y = to_y(*limit_db);
-        let line = Color32::from_rgb(225, 205, 70);
+        let line = if limit_running { Color32::from_rgb(225, 205, 70) } else { Color32::from_gray(150) };
         let area = Rect::from_min_max(column.min, pos2(column.right(), y));
         painter.rect_filled(area, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(90, 80, 10, 225));
         painter.line_segment([pos2(column.left(), y), pos2(column.right(), y)], Stroke::new(2.0, line));
@@ -347,9 +349,8 @@ pub fn level_meter(
     let hint = match (active_line, thresholds.as_ref()) {
         (Some(MeterLine::Yellow), Some((yellow, _))) => format!("Gelb ab {:.0} dB · Pfeil ziehen", **yellow),
         (Some(MeterLine::Red), Some((_, red))) => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", **red),
-        (Some(MeterLine::Limit), _) => {
-            "Limiter: Linie runterziehen, Doppelklick: aus.".to_string()
-        }
+        (Some(MeterLine::Limit), _) if limit_running => "Limiter: Linie runterziehen, Doppelklick: aus.".to_string(),
+        (Some(MeterLine::Limit), _) => "Limiter: wirkt erst mit einem Ausgang (VB-Cable). Doppelklick: aus.".to_string(),
         _ => String::new(),
     };
     response.on_hover_text(format!("Stimme {voice_db:.1} dB\n{hint}"))
