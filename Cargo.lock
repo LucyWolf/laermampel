@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "laermampel"
-version = "0.3.26"
+version = "0.3.27"
 dependencies = [
  "cpal",
  "directories",
