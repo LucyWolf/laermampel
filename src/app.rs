@@ -99,6 +99,8 @@ pub struct LaermampelApp {
     settings_open: bool,
     focus_settings: bool,
     preview_until: Option<Instant>,
+    /// Kleines Fenster mit den Anzeige-Einstellungen, geöffnet über den Knopf im Kanalzug.
+    display_window_open: bool,
     autostart_enabled: bool,
     autostart_error: Option<String>,
 
@@ -146,6 +148,7 @@ impl LaermampelApp {
             settings_open: tray.is_none(),
             focus_settings: false,
             preview_until: None,
+            display_window_open: false,
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
             tray,
@@ -370,6 +373,15 @@ impl LaermampelApp {
             egui::Frame::central_panel(ui.style()).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_ui(ui));
             });
+
+            let mut open = self.display_window_open;
+            egui::Window::new("Anzeige")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(320.0)
+                .show(ui.ctx(), |ui| self.display_ui(ui));
+            self.display_window_open = open;
             if ui.input(|i| i.viewport().close_requested()) {
                 self.close_settings(ui.ctx());
             }
@@ -452,8 +464,6 @@ impl LaermampelApp {
     }
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Anzeige");
-
         let s = &mut self.settings;
         ui.horizontal(|ui| {
             ui.selectable_value(&mut s.display, DisplayMode::Dot, "● Punkt");
@@ -609,7 +619,11 @@ impl LaermampelApp {
                 strip::level_meter(ui, voice_db, level, peak, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
-                    ui.add_space(156.0);
+                    let mut display_open = self.display_window_open;
+                    strip::toggle_button(ui, &mut display_open, "Anzeige", Color32::from_rgb(70, 110, 170))
+                        .on_hover_text("Punkt oder Leiste, Monitor, Position, Größe, Helligkeit");
+                    self.display_window_open = display_open;
+                    ui.add_space(122.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
                         .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
                         .clicked()
@@ -815,8 +829,6 @@ impl LaermampelApp {
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         self.version_ui(ui);
-        ui.separator();
-        self.display_ui(ui);
         ui.separator();
         self.strip_ui(ui);
         ui.separator();
