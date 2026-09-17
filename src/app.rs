@@ -570,9 +570,9 @@ impl LaermampelApp {
             ui.add_space(6.0);
 
             ui.horizontal(|ui| {
-                ui.add_space(24.0);
+                ui.add_space(6.0);
                 let (level, peak) = if running { (p.out_level_db.get(), p.out_peak_db.get()) } else { (-120.0, -120.0) };
-                strip::level_meter(ui, level, peak, 230.0);
+                strip::level_meter(ui, level, peak, &mut s.agc_ceiling_db, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     ui.add_space(190.0);
@@ -630,9 +630,6 @@ impl LaermampelApp {
             ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
                 .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
 
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Limiter").strong());
-            ui.add(egui::Slider::new(&mut s.agc_ceiling_db, -12.0..=0.0).text("Obergrenze").suffix(" dB"));
         });
 
         if restart {
