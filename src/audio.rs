@@ -85,6 +85,40 @@ pub fn list_input_devices() -> Vec<InputDevice> {
         .collect()
 }
 
+/// So viele letzte Samples stehen fürs Frequenz-Diagramm bereit.
+pub const SAMPLE_RING: usize = 2048;
+
+/// Ringpuffer mit den letzten Samples, vom Audio-Thread gefüllt, von der Anzeige gelesen.
+pub struct RawSamples {
+    ring: Mutex<(Vec<f32>, usize)>,
+}
+
+impl Default for RawSamples {
+    fn default() -> Self {
+        Self { ring: Mutex::new((vec![0.0; SAMPLE_RING], 0)) }
+    }
+}
+
+impl RawSamples {
+    fn push(&self, x: f32) {
+        if let Ok(mut guard) = self.ring.try_lock() {
+            let (ring, write) = &mut *guard;
+            ring[*write] = x;
+            *write = (*write + 1) % SAMPLE_RING;
+        }
+    }
+
+    /// Die letzten Samples in richtiger Reihenfolge, oder `None`, wenn gerade geschrieben wird.
+    pub fn snapshot(&self) -> Option<Vec<f32>> {
+        let guard = self.ring.try_lock().ok()?;
+        let (ring, write) = &*guard;
+        let mut samples = Vec::with_capacity(SAMPLE_RING);
+        samples.extend_from_slice(&ring[*write..]);
+        samples.extend_from_slice(&ring[..*write]);
+        Some(samples)
+    }
+}
+
 struct Shared {
     /// Höchster Blockpegel seit dem letzten Abholen.
     peak_db: f32,
@@ -102,7 +136,11 @@ pub struct Meter {
     _output: Option<cpal::Stream>,
     shared: Arc<Mutex<Shared>>,
     fault: Arc<Fault>,
+    /// Letzte Samples fürs Frequenz-Diagramm.
+    pub raw: Arc<RawSamples>,
     pub input_name: String,
+    /// Abtastrate des Mikrofons; der Rauschfilter braucht 48 kHz.
+    pub input_rate: u32,
     pub agc_output_name: Option<String>,
     pub agc_error: Option<String>,
 }
@@ -126,6 +164,7 @@ impl Meter {
 
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
         let fault = Arc::new(Fault::default());
+        let raw = Arc::new(RawSamples::default());
 
         // Erst die Ausgabe öffnen: klappt das nicht, läuft die Ampel trotzdem weiter.
         let input_rate = config.sample_rate();
@@ -152,11 +191,11 @@ impl Meter {
         }
 
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &fault, chain),
-            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &fault, chain),
-            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, chain),
-            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, chain),
-            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, chain),
+            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &fault, &raw, chain),
+            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &fault, &raw, chain),
+            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, &raw, chain),
+            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, &raw, chain),
+            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, &raw, chain),
             other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
         }?;
         stream
@@ -168,7 +207,9 @@ impl Meter {
             _output: output,
             shared,
             fault,
+            raw,
             input_name: device_name(&device),
+            input_rate,
             agc_output_name,
             agc_error,
         })
@@ -197,6 +238,7 @@ fn build<T>(
     config: &cpal::SupportedStreamConfig,
     shared: &Arc<Mutex<Shared>>,
     fault: &Arc<Fault>,
+    raw: &Arc<RawSamples>,
     chain: Option<VoiceChain>,
 ) -> Result<cpal::Stream, String>
 where
@@ -205,7 +247,7 @@ where
 {
     let sample_rate = config.sample_rate() as f32;
     let channels = config.channels().max(1) as usize;
-    let mut proc = Processor::new(sample_rate, Arc::clone(shared), chain);
+    let mut proc = Processor::new(sample_rate, Arc::clone(shared), Arc::clone(raw), chain);
     let fault = Arc::clone(fault);
 
     device
@@ -232,12 +274,13 @@ struct Processor {
     /// Wert, der noch nicht abgegeben werden konnte, weil der Mutex gerade belegt war.
     pending_db: f32,
     shared: Arc<Mutex<Shared>>,
+    raw: Arc<RawSamples>,
     /// Rauschfilter, automatische Lautstärke und Ausgabe, falls eingeschaltet.
     chain: Option<VoiceChain>,
 }
 
 impl Processor {
-    fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>, chain: Option<VoiceChain>) -> Self {
+    fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>, raw: Arc<RawSamples>, chain: Option<VoiceChain>) -> Self {
         Self {
             highpass: Biquad::highpass(sample_rate, HIGHPASS_HZ),
             lowpass: Biquad::lowpass(sample_rate, LOWPASS_HZ.min(sample_rate * 0.45)),
@@ -246,11 +289,13 @@ impl Processor {
             block_len: ((sample_rate * BLOCK_SECONDS) as usize).max(1),
             pending_db: SILENCE_DB,
             shared,
+            raw,
             chain,
         }
     }
 
     fn push(&mut self, x: f32) {
+        self.raw.push(x);
         if let Some(chain) = &mut self.chain {
             chain.push(x);
         }
@@ -341,7 +386,7 @@ mod tests {
     fn measure(freq: f32, rms_db: f32) -> f32 {
         let rate = 48_000.0;
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
-        let mut proc = Processor::new(rate, Arc::clone(&shared), None);
+        let mut proc = Processor::new(rate, Arc::clone(&shared), Arc::new(RawSamples::default()), None);
         let amplitude = 10f32.powf(rms_db / 20.0) * std::f32::consts::SQRT_2;
         // Eine Sekunde einschwingen lassen, dann den letzten Block ablesen.
         for i in 0..rate as usize {

@@ -52,6 +52,8 @@ pub struct CompSettings {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
+    /// Rauschfilter (RNNoise). Braucht 48 kHz, sonst wird er übersprungen.
+    pub denoise: bool,
     pub gate: GateSettings,
     pub comp: CompSettings,
     pub fader_db: f32,
@@ -64,6 +66,7 @@ impl Default for Settings {
     /// Alles aus: das Signal geht unverändert durch.
     fn default() -> Self {
         Self {
+            denoise: false,
             gate: GateSettings { enabled: false, threshold_db: -45.0, range_db: 40.0, attack_ms: 2.0, hold_ms: 250.0, release_ms: 150.0 },
             comp: CompSettings {
                 enabled: false,
@@ -240,9 +243,47 @@ impl Limiter {
     }
 }
 
+/// Rauschfilter auf Sprache trainiert (RNNoise). Arbeitet in Blöcken von 10 ms bei 48 kHz,
+/// das Signal kommt also um einen Block verzögert heraus.
+struct Denoiser {
+    state: Box<nnnoiseless::DenoiseState<'static>>,
+    input: Vec<f32>,
+    output: Vec<f32>,
+    /// Fertige, noch nicht abgeholte Samples.
+    ready: std::collections::VecDeque<f32>,
+}
+
+impl Denoiser {
+    fn new() -> Self {
+        let frame = nnnoiseless::DenoiseState::FRAME_SIZE;
+        Self {
+            state: nnnoiseless::DenoiseState::new(),
+            input: Vec::with_capacity(frame),
+            output: vec![0.0; frame],
+            ready: std::collections::VecDeque::with_capacity(frame * 2),
+        }
+    }
+
+    /// Ein Sample hinein, ein (verzögertes) Sample heraus.
+    fn process(&mut self, x: f32) -> f32 {
+        self.input.push(x * 32768.0);
+        if self.input.len() == nnnoiseless::DenoiseState::FRAME_SIZE {
+            self.state.process_frame(&mut self.output, &self.input);
+            self.input.clear();
+            for &y in &self.output {
+                self.ready.push_back(y / 32768.0);
+            }
+        }
+        // Bis der erste Block fertig ist, kommt Stille heraus (10 ms).
+        self.ready.pop_front().unwrap_or(0.0)
+    }
+}
+
 /// Die ganze Kette für ein Mikrofon mit beliebig vielen Kanälen.
 pub struct Chain {
     settings: Settings,
+    /// Nur bei 48 kHz vorhanden: RNNoise arbeitet nur mit dieser Abtastrate.
+    denoiser: Option<Denoiser>,
     configured: bool,
     gate: Gate,
     comp: Comp,
@@ -260,6 +301,7 @@ impl Chain {
     pub fn new(sample_rate: f32) -> Self {
         let mut chain = Self {
             settings: Settings::default(),
+            denoiser: (sample_rate as u32 == 48_000).then(Denoiser::new),
             configured: false,
             gate: Gate::new(sample_rate),
             comp: Comp::new(sample_rate),
@@ -292,7 +334,16 @@ impl Chain {
             return;
         }
         // Gemessen wird am Mittel aller Kanäle, alle Kanäle bekommen dieselbe Verstärkung.
-        let mono = frame.iter().sum::<f32>() / frame.len() as f32;
+        let mut mono = frame.iter().sum::<f32>() / frame.len() as f32;
+
+        // Rauschfilter ersetzt das Signal; danach zählt nur noch der gefilterte Ton.
+        if self.settings.denoise
+            && let Some(denoiser) = &mut self.denoiser
+        {
+            mono = denoiser.process(mono);
+            frame.fill(mono);
+        }
+
         let mut gain = 1.0;
         if self.settings.gate.enabled {
             gain *= self.gate.gain(mono);
@@ -417,6 +468,29 @@ mod tests {
         let before = chain.comp_gain_db();
         run(&mut chain, &sine(RATE as usize * 5, -65.0));
         assert!((chain.comp_gain_db() - before).abs() < 0.5, "Verstärkung {before} -> {}", chain.comp_gain_db());
+    }
+
+    /// Gleichmäßiges Rauschen, reproduzierbar ohne Zufallsbibliothek.
+    fn noise(n: usize, level: f32) -> Vec<f32> {
+        let mut state = 0x1234_5678u32;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rauschfilter_entfernt_rauschen() {
+        let mut chain = Chain::new(RATE);
+        let mut s = Settings::default();
+        s.denoise = true;
+        chain.set(s);
+        let input = noise(RATE as usize * 3, 0.05);
+        let out = run(&mut chain, &input);
+        let reduction = tail_rms(&input) - tail_rms(&out);
+        assert!(reduction > 10.0, "nur {reduction:.1} dB leiser");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::instance;
 use crate::level::{Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
 use crate::settings::{self, DisplayMode, Settings};
+use crate::spectrum::Spectrum;
 use crate::strip;
 use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
@@ -42,6 +43,7 @@ fn comp_range_db(knob: f32) -> f32 {
 }
 
 const KNOB_OFF: f32 = 0.05;
+
 
 /// Zustand beim Austragen eines alten Audio-Filters (läuft im Hintergrund, wartet auf UAC).
 #[derive(Clone)]
@@ -120,6 +122,9 @@ pub struct LaermampelApp {
     #[cfg_attr(not(windows), allow(dead_code))]
     /// Ist noch ein Filter aus einer älteren Version eingetragen? Gelegentlich neu gelesen.
     leftover_filter: Option<(bool, Instant)>,
+
+    /// Frequenz-Diagramm und Rauschprofil.
+    spectrum: Spectrum,
 }
 
 impl LaermampelApp {
@@ -160,6 +165,7 @@ impl LaermampelApp {
             volume_gate: VolumeGate::new(),
             apo_job: Arc::new(Mutex::new(ApoJob::Idle)),
             leftover_filter: None,
+            spectrum: Spectrum::new(),
         };
         // Früher ging der Fader in 0,1-dB-Schritten; ein kaum sichtbarer Rest wie 0,3 dB wird 0.
         app.settings.fader_db = app.settings.fader_db.round() + 0.0;
@@ -217,6 +223,7 @@ impl LaermampelApp {
     fn chain_settings(&self) -> ChainSettings {
         let s = &self.settings;
         ChainSettings {
+            denoise: s.denoise,
             gate: GateSettings {
                 enabled: gate_on(s),
                 threshold_db: s.gate_threshold_db,
@@ -244,7 +251,9 @@ impl LaermampelApp {
         self.chain_control.set(self.chain_settings());
     }
 
-    /// Angezeigte Farbe; während der Vorschau immer Rot.
+
+
+    /// Pegel mitschreiben und das Grundrauschen schätzen (leisestes Zehntel der letzten 30 s).
     fn shown_zone(&self) -> Zone {
         if self.preview_until.is_some_and(|t| Instant::now() < t) {
             Zone::Red
@@ -548,6 +557,7 @@ impl LaermampelApp {
     fn strip_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
+        let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
         let devices = self.devices.clone();
         let chosen_name = self
             .settings
@@ -601,6 +611,9 @@ impl LaermampelApp {
         }
         if s.agc_ceiling_db < 0.0 {
             needs_cable.push("Limiter");
+        }
+        if s.denoise {
+            needs_cable.push("Rauschfilter");
         }
         let nothing_processes = !needs_cable.is_empty() && feedback.is_none();
 
@@ -732,7 +745,16 @@ impl LaermampelApp {
                     strip::toggle_button(ui, &mut display_open, "Anzeige", Color32::from_rgb(70, 110, 170))
                         .on_hover_text("Punkt oder Leiste, Monitor, Position, Größe, Helligkeit");
                     self.display_window_open = display_open;
-                    ui.add_space(122.0);
+                    ui.add_space(4.0);
+                    let denoise_hint = match rate_48k {
+                        true => "Rauschfilter (RNNoise) gegen Tastatur, Lüfter und Brummen. Wirkt über den Ausgang.",
+                        false => "Der Rauschfilter braucht ein Mikrofon mit 48 kHz.",
+                    };
+                    ui.add_enabled_ui(rate_48k, |ui| {
+                        strip::toggle_button(ui, &mut s.denoise, "Rausch", Color32::from_rgb(70, 110, 170))
+                            .on_hover_text(denoise_hint);
+                    });
+                    ui.add_space(88.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
                         .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
                         .clicked()
@@ -850,6 +872,108 @@ impl LaermampelApp {
         }
     }
 
+    /// Frequenz-Diagramm wie in ReaFir: was das Mikrofon gerade hört, dazu das Rauschprofil.
+    fn noise_ui(&mut self, ui: &mut egui::Ui) {
+        const TOP_DB: f32 = 0.0;
+        const BOTTOM_DB: f32 = -96.0;
+        const MIN_HZ: f32 = 50.0;
+
+        ui.heading("Rauschen");
+        if let Some(total) = self.profile_total_db() {
+            ui.label(format!("Gemessenes Rauschen: {total:.0} dB"));
+        } else if self.spectrum.profile_running() {
+            ui.label("Messe Rauschprofil, bitte nicht sprechen …");
+        } else {
+            ui.label("Sei kurz still und miss dein Rauschprofil, dann siehst du es als graue Linie.");
+        }
+
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 150.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(4), Color32::from_black_alpha(200));
+
+        let max_hz = (self.spectrum.frequency(crate::spectrum::BINS - 1)).min(20_000.0).max(1000.0);
+        let to_x = |hz: f32| {
+            let t = (hz.max(MIN_HZ) / MIN_HZ).log10() / (max_hz / MIN_HZ).log10();
+            rect.left() + t.clamp(0.0, 1.0) * rect.width()
+        };
+        let to_y = |db: f32| {
+            let t = (db.clamp(BOTTOM_DB, TOP_DB) - BOTTOM_DB) / (TOP_DB - BOTTOM_DB);
+            rect.bottom() - t * rect.height()
+        };
+
+        // Gitter: Frequenzen und dB.
+        let grid = Stroke::new(1.0, Color32::from_white_alpha(18));
+        let label_color = Color32::from_rgb(140, 146, 156);
+        for hz in [100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0] {
+            if hz > max_hz {
+                continue;
+            }
+            let x = to_x(hz);
+            painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], grid);
+            let text = if hz >= 1000.0 { format!("{:.0}k", hz / 1000.0) } else { format!("{hz:.0}") };
+            painter.text(Pos2::new(x + 2.0, rect.bottom()), egui::Align2::LEFT_BOTTOM, text, egui::FontId::proportional(9.0), label_color);
+        }
+        for step in 0..=8 {
+            let db = step as f32 * -12.0;
+            let y = to_y(db);
+            painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], grid);
+            painter.text(Pos2::new(rect.right() - 2.0, y), egui::Align2::RIGHT_BOTTOM, format!("{db:.0}"), egui::FontId::proportional(9.0), label_color);
+        }
+
+        let line = |bands: &[f32], color: Color32, width: f32| {
+            let points: Vec<Pos2> = bands
+                .iter()
+                .enumerate()
+                .map(|(bin, &db)| (self.spectrum.frequency(bin), db))
+                .filter(|(hz, _)| *hz >= MIN_HZ && *hz <= max_hz)
+                .map(|(hz, db)| Pos2::new(to_x(hz), to_y(db)))
+                .collect();
+            if points.len() > 1 {
+                painter.add(egui::Shape::line(points, Stroke::new(width, color)));
+            }
+        };
+        if let Some(profile) = self.spectrum.profile_db() {
+            line(profile, Color32::from_gray(170), 1.0);
+        }
+        if let Some(bands) = self.spectrum.bands_db() {
+            line(bands, strip::ACCENT, 1.5);
+        }
+        if gate_on(&self.settings) {
+            let y = to_y(self.settings.gate_threshold_db);
+            painter.line_segment(
+                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                Stroke::new(1.5, Color32::from_rgb(245, 190, 20)),
+            );
+        }
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.spectrum.profile_running(), egui::Button::new("Rauschprofil messen"))
+                .on_hover_text("Zwei Sekunden still sein; danach liegt dein Rauschen als graue Linie im Bild.")
+                .clicked()
+            {
+                self.spectrum.start_profile();
+            }
+            if self.spectrum.profile_db().is_some() && ui.button("Profil löschen").clicked() {
+                self.spectrum.clear_profile();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(strip::ACCENT, "— jetzt");
+            ui.colored_label(Color32::from_gray(170), "— Rauschprofil");
+            if gate_on(&self.settings) {
+                ui.colored_label(Color32::from_rgb(245, 190, 20), "— Gate");
+            }
+        });
+    }
+
+    /// Gesamtpegel des gemessenen Rauschprofils (Summe über alle Frequenzen).
+    fn profile_total_db(&self) -> Option<f32> {
+        let profile = self.spectrum.profile_db()?;
+        let power: f32 = profile.iter().map(|db| 10f32.powf(db / 10.0)).sum();
+        Some(10.0 * power.max(1e-12).log10())
+    }
+
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
@@ -963,6 +1087,9 @@ impl LaermampelApp {
         self.version_ui(ui);
 
         ui.separator();
+        self.noise_ui(ui);
+
+        ui.separator();
         egui::CollapsingHeader::new("Kanalzug: Ausgabe und Feineinstellungen")
             .id_salt("strip_details")
             .default_open(self.meter.as_ref().and_then(|m| m.agc_error.as_deref()).is_some_and(|e| e != agc::VB_CABLE_MISSING))
@@ -1035,6 +1162,8 @@ impl eframe::App for LaermampelApp {
             }
         }
 
+        let rate = self.meter.as_ref().map_or(48_000.0, |m| m.input_rate as f32);
+        self.spectrum.update(self.meter.as_ref().map(|m| &*m.raw), rate);
         self.sync_chain();
 
         let actions = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
