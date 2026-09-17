@@ -697,11 +697,10 @@ impl LaermampelApp {
 
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
-                let (level, peak) = feedback.map_or((-120.0, -120.0), |f| (f.out_level_db, f.out_peak_db));
                 // Gelb und Rot nur zeigen, solange der Warnton an ist.
                 let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
                 let muted = s.mic_muted;
-                strip::level_meter(ui, voice_db, level, peak, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
+                strip::level_meter(ui, voice_db, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
@@ -722,14 +721,7 @@ impl LaermampelApp {
             });
 
             if nothing_processes {
-                let warning = egui::RichText::new("⚠ Wirkt erst mit Filter oder VB-Cable").small().color(RED_TEXT);
-                if ui
-                    .add(egui::Label::new(warning).sense(egui::Sense::click()))
-                    .on_hover_text("Comp., Gate, Fader, Limiter und Mute brauchen den Filter (⚙ → „Ohne VB-Cable“) oder VB-Cable")
-                    .clicked()
-                {
-                    self.general_window_open = true;
-                }
+                self.filter_prompt_ui(ui);
             }
             // Fehlendes VB-Cable ist kein Fehler, nur kaputte Einstellungen werden gemeldet.
             else if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) && !self.apo.active() {
@@ -833,7 +825,7 @@ impl LaermampelApp {
 
     #[cfg(windows)]
     fn apo_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Ohne VB-Cable (Test)").id_salt("apo").show(ui, |ui| {
+        egui::CollapsingHeader::new("Mikrofon-Filter").id_salt("apo").show(ui, |ui| {
             ui.label(
                 "Trägt einen Audio-Filter direkt bei deinem Mikrofon ein. Dann wirken Comp., Gate, Fader, \
                  Limiter und Mute in allen Programmen mit deinem normalen Mikrofon, ohne VB-Cable.",
@@ -844,16 +836,7 @@ impl LaermampelApp {
                 return;
             };
 
-            let stale = self.apo_installed.as_ref().is_none_or(|(g, _, _, t)| g != &guid || t.elapsed() > Duration::from_secs(2));
-            if stale {
-                self.apo_installed = Some((
-                    guid.clone(),
-                    apo_setup::is_installed(&guid),
-                    apo_setup::has_vendor_effect(&guid),
-                    Instant::now(),
-                ));
-            }
-            let (_, installed, vendor, _) = self.apo_installed.clone().expect("gerade gesetzt");
+            let (installed, vendor) = self.apo_state(&guid);
 
             let job = self.apo_job.lock().map(|j| j.clone()).unwrap_or(ApoJob::Idle);
             match &job {
@@ -906,6 +889,73 @@ impl LaermampelApp {
                 }
             }
         });
+    }
+
+    /// Im Kanalzug, wenn Gate & Co. eingestellt sind, aber nichts das Mikrofon bearbeitet:
+    /// direkt der Knopf zum Einrichten des Filters.
+    #[cfg(windows)]
+    fn filter_prompt_ui(&mut self, ui: &mut egui::Ui) {
+        let small_red = |text: &str| egui::RichText::new(text).small().color(RED_TEXT);
+        let Some(guid) = self.settings.device_id.as_deref().and_then(apo_setup::endpoint_guid) else {
+            ui.label(small_red("⚠ Erst ein Mikrofon wählen"));
+            return;
+        };
+        let job = self.apo_job.lock().map(|j| j.clone()).unwrap_or(ApoJob::Idle);
+        if let ApoJob::Running(_) = job {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new("Filter wird eingerichtet …").small());
+            });
+            return;
+        }
+        if let ApoJob::Failed(e) = &job {
+            ui.label(small_red(e));
+        }
+
+        let (installed, _) = self.apo_state(&guid);
+        if installed && !self.apo.outdated() {
+            // Eingetragen, aber Windows lädt ihn nicht: Einstellungen zeigen, woran es liegen kann.
+            if ui
+                .add(egui::Label::new(small_red("⚠ Filter eingetragen, aber nicht aktiv")).sense(egui::Sense::click()))
+                .on_hover_text("Öffnet die Einstellungen mit Hinweisen")
+                .clicked()
+            {
+                self.general_window_open = true;
+            }
+            return;
+        }
+
+        let text = if installed { "Filter aktualisieren" } else { "Filter einrichten" };
+        let button = egui::Button::new(egui::RichText::new(text).color(Color32::WHITE).strong()).fill(Color32::from_rgb(70, 110, 170));
+        if ui
+            .add_sized([ui.available_width(), 26.0], button)
+            .on_hover_text(
+                "Damit Comp., Gate, Fader, Limiter und Mute in Discord, Spielen usw. wirken, ohne VB-Cable. \
+                 Windows fragt einmal nach Adminrechten, der Ton ist kurz weg.",
+            )
+            .clicked()
+        {
+            let what = if installed { "Aktualisiere Filter, der Ton ist kurz weg …" } else { "Richte Filter ein, der Ton ist kurz weg …" };
+            self.start_apo_job(what, format!("--apo install {guid}"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn filter_prompt_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("⚠ Braucht VB-Cable").small().color(RED_TEXT));
+    }
+
+    /// Ob der Filter beim Mikrofon eingetragen ist und ob es einen Hersteller-Filter gibt.
+    /// Aus der Registry, höchstens alle 2 Sekunden neu gelesen.
+    #[cfg(windows)]
+    fn apo_state(&mut self, guid: &str) -> (bool, bool) {
+        let stale = self.apo_installed.as_ref().is_none_or(|(g, _, _, t)| g != guid || t.elapsed() > Duration::from_secs(2));
+        if stale {
+            self.apo_installed =
+                Some((guid.to_string(), apo_setup::is_installed(guid), apo_setup::has_vendor_effect(guid), Instant::now()));
+        }
+        let (_, installed, vendor, _) = self.apo_installed.clone().expect("gerade gesetzt");
+        (installed, vendor)
     }
 
     #[cfg(windows)]
