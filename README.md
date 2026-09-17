@@ -27,7 +27,7 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 - **Einstellungen:** Klick auf das Ampel-Symbol im Infobereich (neben der Uhr) oder Rechtsklick → Einstellungen.
   Die Lärmampel nochmal starten öffnet ebenfalls die Einstellungen.
 - **Beenden:** Rechtsklick auf das Symbol → Beenden.
-- **Updates:** Das Programm sucht beim Start nach einer neuen Version. Unter Einstellungen → Version auf „Update installieren“ klicken:
+- **Updates:** Das Programm sucht beim Start nach einer neuen Version (grüner Punkt am Zahnrad). Zahnrad oben rechts → „Update installieren“:
   der Installer läuft ohne Rückfragen durch und startet die Lärmampel danach neu.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
 
@@ -67,7 +67,7 @@ so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mi
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
 Bei Problemen hilft die Log-Datei `%LOCALAPPDATA%\\LucyWolf\\Laermampel\\data\\laermampel.log`
-(Einstellungen → Version → „Log-Datei zeigen“). Sie hält Start, Mikrofon, Fenster, Updates und Abstürze fest.
+(Zahnrad oben rechts → „Log-Datei zeigen“). Sie hält Start, Mikrofon, Fenster, Updates und Abstürze fest.
 
 Die Einstellungen liegen unter `%APPDATA%\LucyWolf\Laermampel\config\settings.json`.
 
