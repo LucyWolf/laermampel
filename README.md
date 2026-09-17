@@ -45,7 +45,7 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
 - **Mute:** Mikrofon für andere stumm. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
-- Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen unter „Details“.
+- Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:
 
@@ -56,7 +56,7 @@ Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
 ### Ohne VB-Cable (Test)
 
-Unter Details → „Ohne VB-Cable (Test)“ lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
+Unter Zahnrad → „Ohne VB-Cable (Test)“ lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
 so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mit dem normalen Mikrofon.
 
 - Braucht einmal Adminrechte; der Windows-Audiodienst startet dabei neu (Ton ein paar Sekunden weg).

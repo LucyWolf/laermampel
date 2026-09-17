@@ -350,8 +350,8 @@ impl LaermampelApp {
         let builder = egui::ViewportBuilder::default()
             .with_title("Lärmampel – Einstellungen")
             .with_icon(Arc::clone(&self.icon))
-            .with_inner_size([400.0, 760.0])
-            .with_min_inner_size([340.0, 300.0]);
+            .with_inner_size([250.0, 450.0])
+            .with_min_inner_size([240.0, 300.0]);
 
         ctx.show_viewport_immediate(id, builder, |ui, class| {
             if !self.settings_window_seen {
@@ -363,23 +363,14 @@ impl LaermampelApp {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_ui(ui));
             });
 
-            let mut open = self.display_window_open;
-            egui::Window::new("Anzeige")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(320.0)
-                .show(ui.ctx(), |ui| self.display_ui(ui));
-            self.display_window_open = open;
-
-            let mut open = self.general_window_open;
-            egui::Window::new("Einstellungen")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(300.0)
-                .show(ui.ctx(), |ui| self.general_ui(ui));
-            self.general_window_open = open;
+            let ctx = ui.ctx().clone();
+            if self.display_window_open {
+                self.display_window_open = self.sub_window(&ctx, "anzeige", "Lärmampel – Anzeige", [360.0, 420.0], Self::display_ui);
+            }
+            if self.general_window_open {
+                self.general_window_open =
+                    self.sub_window(&ctx, "allgemein", "Lärmampel – Einstellungen", [400.0, 640.0], Self::general_ui);
+            }
             if ui.input(|i| i.viewport().close_requested()) {
                 self.close_settings(ui.ctx());
             }
@@ -389,6 +380,25 @@ impl LaermampelApp {
             ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
             self.focus_settings = false;
         }
+    }
+
+    /// Eigenes kleines Fenster. Gibt `false` zurück, sobald es geschlossen wurde.
+    fn sub_window(&mut self, ctx: &egui::Context, id: &str, title: &str, size: [f32; 2], content: fn(&mut Self, &mut egui::Ui)) -> bool {
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_icon(Arc::clone(&self.icon))
+            .with_inner_size(size)
+            .with_min_inner_size([280.0, 200.0]);
+        let mut open = true;
+        ctx.show_viewport_immediate(ViewportId::from_hash_of(id), builder, |ui, _class| {
+            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| content(self, ui));
+            });
+            if ui.input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+        });
+        open
     }
 
     fn version_ui(&mut self, ui: &mut egui::Ui) {
@@ -517,7 +527,6 @@ impl LaermampelApp {
     fn strip_ui(&mut self, ui: &mut egui::Ui) {
         use std::sync::atomic::Ordering;
 
-        ui.heading("Mikrofon für andere Programme");
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         let devices = self.devices.clone();
@@ -633,6 +642,13 @@ impl LaermampelApp {
                     strip::mute_button(ui, &mut s.mic_muted);
                 });
             });
+
+            if output_error.is_some() && !self.apo.active() {
+                let warning = egui::RichText::new("⚠ Ausgabe prüfen").small().color(RED_TEXT);
+                if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text("Öffnet die Einstellungen").clicked() {
+                    self.general_window_open = true;
+                }
+            }
         });
 
         if refresh_devices {
@@ -643,74 +659,78 @@ impl LaermampelApp {
             self.restart_meter();
         }
 
+    }
+
+    /// Ausgabe, Hinweise zu VB-Cable und die Feineinstellungen des Kanalzugs.
+    fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
+        let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
+        let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         if self.apo.active() {
             ui.colored_label(strip::ACCENT, "Audio-Filter aktiv: Fader und Mute wirken direkt am Mikrofon.");
-        } else if let Some(err) = output_error {
+        } else if let Some(err) = &output_error {
             ui.colored_label(RED_TEXT, err);
             ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
-        } else if running {
+        } else if output_name.is_some() {
             ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
         }
 
-        #[cfg(windows)]
-        self.apo_ui(ui);
-
         let mut restart = false;
-        egui::CollapsingHeader::new("Details").id_salt("strip_details").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Ausgabe");
-                let selected = output_name.clone().unwrap_or_else(|| "–".to_string());
-                egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(220.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(self.settings.agc_output_id.is_none(), "VB-Cable automatisch").clicked() {
-                        self.settings.agc_output_id = None;
-                        restart = true;
-                    }
-                    for d in &self.output_devices {
-                        let chosen = self.settings.agc_output_id.as_deref() == Some(d.id.as_str());
-                        if ui.selectable_label(chosen, &d.name).clicked() {
-                            self.settings.agc_output_id = Some(d.id.clone());
-                            restart = true;
-                        }
-                    }
-                });
-                if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
-                    self.output_devices = agc::list_output_devices();
+
+        ui.horizontal(|ui| {
+            ui.label("Ausgabe");
+            let selected = output_name.clone().unwrap_or_else(|| "–".to_string());
+            egui::ComboBox::from_id_salt("agc_output").selected_text(selected).width(220.0).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.agc_output_id.is_none(), "VB-Cable automatisch").clicked() {
+                    self.settings.agc_output_id = None;
                     restart = true;
                 }
-            });
-
-            let s = &mut self.settings;
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Gate").strong());
-            ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text("Absenkung").suffix(" dB"))
-                .on_hover_text("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.");
-            ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text("Öffnen").suffix(" ms"));
-            ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text("Halten").suffix(" ms"))
-                .on_hover_text("So lange bleibt es nach dem letzten Wort offen.");
-            ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
-
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Ampel und Ton").strong());
-            ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text("Ton-Lautstärke"));
-                if ui.button("Testen").clicked() {
-                    beep::play(s.beep_volume);
+                for d in &self.output_devices {
+                    let chosen = self.settings.agc_output_id.as_deref() == Some(d.id.as_str());
+                    if ui.selectable_label(chosen, &d.name).clicked() {
+                        self.settings.agc_output_id = Some(d.id.clone());
+                        restart = true;
+                    }
                 }
             });
-            ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"))
-                .on_hover_text("Wie schnell die Ampel auf lautere Stimme reagiert");
-            ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
-            ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
-
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Comp.").strong());
-            ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
-            ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
-            ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text("Hochregeln").suffix(" ms"));
-            ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
-                .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
-
+            if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
+                self.output_devices = agc::list_output_devices();
+                restart = true;
+            }
         });
+
+        let s = &mut self.settings;
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Gate").strong());
+        ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text("Absenkung").suffix(" dB"))
+            .on_hover_text("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.");
+        ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text("Öffnen").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text("Halten").suffix(" ms"))
+            .on_hover_text("So lange bleibt es nach dem letzten Wort offen.");
+        ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
+
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Ampel und Ton").strong());
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text("Ton-Lautstärke"));
+            if ui.button("Testen").clicked() {
+                beep::play(s.beep_volume);
+            }
+        });
+        ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"))
+            .on_hover_text("Wie schnell die Ampel auf lautere Stimme reagiert");
+        ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
+
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Comp.").strong());
+        ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
+        ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text("Hochregeln").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
+            .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
+
+
+
 
         if restart {
             self.restart_meter();
@@ -826,6 +846,15 @@ impl LaermampelApp {
 
     fn general_ui(&mut self, ui: &mut egui::Ui) {
         self.version_ui(ui);
+
+        ui.separator();
+        egui::CollapsingHeader::new("Kanalzug: Ausgabe und Feineinstellungen")
+            .id_salt("strip_details")
+            .default_open(self.meter.as_ref().is_some_and(|m| m.agc_error.is_some()))
+            .show(ui, |ui| self.channel_details_ui(ui));
+
+        #[cfg(windows)]
+        self.apo_ui(ui);
 
         if autostart::SUPPORTED {
             ui.separator();
