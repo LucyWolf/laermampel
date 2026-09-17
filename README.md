@@ -46,7 +46,8 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
-- **Mute:** Mikrofon für andere stumm. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
+- **Mute:** Mikrofon für andere stumm. Die Pegelanzeige wird grau, schlägt aber weiter aus. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
+- Comp., Gate, Fader, Limiter und Mute brauchen den Filter („Ohne VB-Cable“) oder VB-Cable. Ohne beides zeigt der Kanalzug „⚠ Wirkt erst mit Filter oder VB-Cable“.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:
@@ -63,7 +64,7 @@ so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mi
 
 - Braucht einmal Adminrechte; der Windows-Audiodienst startet dabei neu (Ton ein paar Sekunden weg).
 - Die Originalwerte des Mikrofons werden gesichert, „Filter entfernen“ und die Deinstallation stellen sie wieder her.
-- Noch ein Test: Gate, Comp. und Limiter laufen weiterhin nur über VB-Cable.
+- Gate, Comp., Fader, Limiter und Mute laufen dann im Filter, derselbe Code wie beim Weg über VB-Cable.
 - Nicht jeder Treiber lädt solche Filter; dann zeigt die Lärmampel „Eingetragen, aber Windows nutzt den Filter nicht“.
 - Notfalls von Hand austragen: `laermampel.exe --apo uninstall-all` als Administrator ausführen.
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.

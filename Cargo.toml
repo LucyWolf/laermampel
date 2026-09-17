@@ -7,6 +7,7 @@ version = "0.3.23"
 edition = "2024"
 
 [dependencies]
+laermampel-apo = { path = "apo" }
 cpal = "0.18"
 directories = "6"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
@@ -22,7 +23,6 @@ lto = true
 strip = true
 
 [target.'cfg(windows)'.dependencies]
-laermampel-apo = { path = "apo" }
 raw-window-handle = "0.6"
 tray-icon = "0.25"
 windows-sys = { version = "0.61", features = [
