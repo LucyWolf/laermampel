@@ -582,9 +582,9 @@ impl LaermampelApp {
             voice_db
         } else if let Some(f) = feedback {
             f.out_level_db
-        } else if volume_gating && !gate_open {
-            // Wie bei Voicemeeter: ist das Gate zu, gibt es keinen Ausschlag mehr.
-            -120.0
+        } else if volume_gating {
+            // Wie bei Voicemeeter: je höher das Gate, desto weniger Ausschlag.
+            voice_db - self.volume_gate.reduction_db()
         } else {
             voice_db
         };
@@ -966,7 +966,9 @@ impl eframe::App for LaermampelApp {
         let gate_params = GateParams {
             threshold_db: self.settings.gate_threshold_db,
             range_db: self.settings.gate_range_db,
+            attack_ms: self.settings.gate_attack_ms,
             hold_ms: self.settings.gate_hold_ms,
+            release_ms: self.settings.gate_release_ms,
         };
         let device_id = self.settings.device_id.clone();
         let input = self.volume_gate.update(device_id.as_deref(), volume_gate_on, volume_mute_on, meter_input, &gate_params);
