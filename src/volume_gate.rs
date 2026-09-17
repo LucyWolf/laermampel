@@ -1,4 +1,4 @@
-//! Gate und Mute über den Mikrofon-Regler von Windows: ohne VB-Cable, ohne Adminrechte.
+//! Gate, Mute und Fader über den Mikrofon-Regler von Windows: ohne VB-Cable, ohne Adminrechte.
 //!
 //! Das Gate arbeitet gleitend (wie in `dsp`): unter der Schwelle zieht es den Windows-Regler umso
 //! weiter herunter, je leiser es ist. Weil dann auch die Lärmampel leiser hört, wird die Absenkung
@@ -74,6 +74,8 @@ pub struct VolumeGate {
     muted: bool,
     /// Stand des Windows-Reglers, bevor die Lärmampel ihn angefasst hat.
     original_db: f32,
+    /// Ausgangspunkt inklusive Fader; von hier senkt das Gate ab.
+    base_db: f32,
     /// Was die Lärmampel zuletzt eingestellt hat.
     applied_db: f32,
     last_resync: Instant,
@@ -107,6 +109,7 @@ impl VolumeGate {
             volume: None,
             muted: false,
             original_db: 0.0,
+            base_db: 0.0,
             applied_db: 0.0,
             last_resync: Instant::now(),
             last_tick: Instant::now(),
@@ -137,7 +140,8 @@ impl VolumeGate {
 
     /// Wie viel leiser die Lärmampel das Mikrofon gerade hört, weil der Regler unten steht.
     fn heard_attenuation_db(&self) -> f32 {
-        if self.has_volume() { ((self.original_db - self.applied_db) * self.response).max(0.0) } else { 0.0 }
+        // Nur die Absenkung durchs Gate herausrechnen; den Fader soll man im Pegel sehen.
+        if self.has_volume() { ((self.base_db - self.applied_db) * self.response).max(0.0) } else { 0.0 }
     }
 
     fn has_volume(&self) -> bool {
@@ -154,6 +158,7 @@ impl VolumeGate {
         device_id: Option<&str>,
         gate: bool,
         mute: bool,
+        fader_db: f32,
         measured_db: Option<f32>,
         params: &GateParams,
     ) -> Option<f32> {
@@ -166,10 +171,16 @@ impl VolumeGate {
             self.release();
             self.endpoint_id = endpoint_id;
         }
-        // Auch ohne Gate und Mute verbunden bleiben: die Empfindlichkeit lässt sich sonst nicht stellen.
+        let uses_fader = fader_db.abs() > 0.05;
+        if !gate && !mute && !uses_fader {
+            self.release();
+            return real_db;
+        }
         if !self.has_volume() && !self.attach() {
             return real_db;
         }
+        // Fader verschiebt den Ausgangspunkt, das Gate senkt von dort weiter ab.
+        self.base_db = self.clamp_db(self.original_db + fader_db);
 
         // Mute: Windows schaltet das Mikrofon für alle Programme stumm, auch für die Lärmampel.
         if mute != self.muted {
@@ -183,8 +194,9 @@ impl VolumeGate {
             self.apply_reduction();
         }
 
-        // Von Hand verstellter Regler, solange nichts abgesenkt ist: neuer Ausgangswert.
+        // Von Hand verstellter Regler, solange die Lärmampel nichts verschiebt: neuer Ausgangswert.
         if self.reduction_db < MIN_STEP_DB
+            && !uses_fader
             && matches!(self.test, Test::Idle)
             && self.last_resync.elapsed() >= RESYNC_INTERVAL
         {
@@ -271,13 +283,13 @@ impl VolumeGate {
         real_db
     }
 
-    /// Regler so weit herunter, dass andere um `reduction_db` leiser hören.
+    /// Regler auf Ausgangspunkt minus Absenkung durchs Gate.
     fn apply_reduction(&mut self) {
         let mut asked = self.reduction_db / self.response.max(0.1);
         if self.last_test.is_none() {
             asked = asked.min(UNTESTED_MAX_DB);
         }
-        let wanted = self.original_db - asked;
+        let wanted = self.base_db - asked;
         let target = self.clamp_db(wanted);
         let back_to_start = self.reduction_db < MIN_STEP_DB && target != self.applied_db;
         if (target - self.applied_db).abs() >= MIN_STEP_DB || back_to_start {
@@ -301,7 +313,7 @@ impl VolumeGate {
             return;
         }
         let restore_db = self.applied_db;
-        let dip = self.clamp_db(restore_db - TEST_DIP_DB);
+        let dip = self.clamp_db_min(restore_db - TEST_DIP_DB);
         if restore_db - dip < 3.0 {
             return;
         }
@@ -342,12 +354,18 @@ impl VolumeGate {
         false
     }
 
+    /// Auf den Bereich begrenzen, den das Gerät hergibt.
     fn clamp_db(&self, db: f32) -> f32 {
         #[cfg(windows)]
         if let Some(volume) = &self.volume {
-            return db.clamp(volume.min_db, self.original_db);
+            return db.clamp(volume.min_db, volume.max_db);
         }
-        db.min(self.original_db)
+        db
+    }
+
+    /// Wie `clamp_db`, aber nie über den Ausgangspunkt (für den Test).
+    fn clamp_db_min(&self, db: f32) -> f32 {
+        self.clamp_db(db).min(self.base_db)
     }
 
     /// Regler und Stummschaltung zurück auf den ursprünglichen Stand und loslassen.
@@ -422,6 +440,7 @@ impl VolumeGate {
         let Some(volume) = win::Volume::open(id) else { return false };
         let Some(current) = volume.get_db() else { return false };
         self.original_db = current;
+        self.base_db = current;
         self.applied_db = current;
         self.volume = Some(volume);
         self.reduction_db = 0.0;
@@ -434,31 +453,6 @@ impl VolumeGate {
     #[cfg(not(windows))]
     fn attach(&mut self) -> bool {
         false
-    }
-
-    /// Mikrofon-Empfindlichkeit von Windows, 0 bis 1 (derselbe Regler wie in den Soundeinstellungen).
-    pub fn sensitivity(&self) -> Option<f32> {
-        #[cfg(windows)]
-        return self.volume.as_ref().and_then(win::Volume::get_scalar);
-        #[cfg(not(windows))]
-        None
-    }
-
-    pub fn set_sensitivity(&mut self, value: f32) {
-        #[cfg(windows)]
-        if let Some(volume) = &self.volume {
-            volume.set_scalar(value.clamp(0.0, 1.0));
-            // Der Gate-Ausgangspunkt ist damit neu.
-            if let Some(db) = volume.get_db() {
-                self.original_db = db;
-                self.applied_db = db;
-                self.reduction_db = 0.0;
-                self.smoothed_db = None;
-                self.smoothed_raw_db = None;
-            }
-        }
-        #[cfg(not(windows))]
-        let _ = value;
     }
 
     fn read_db(&self) -> Option<f32> {
@@ -497,6 +491,7 @@ mod win {
     pub struct Volume {
         endpoint: IAudioEndpointVolume,
         pub min_db: f32,
+        pub max_db: f32,
     }
 
     impl Volume {
@@ -508,18 +503,9 @@ mod win {
                 let device = enumerator.GetDevice(&HSTRING::from(endpoint_id)).ok()?;
                 let endpoint: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
                 let (mut min_db, mut max_db, mut step) = (0f32, 0f32, 0f32);
+                let _ = step;
                 endpoint.GetVolumeRange(&mut min_db, &mut max_db, &mut step).ok()?;
-                Some(Volume { endpoint, min_db })
-            }
-        }
-
-        pub fn get_scalar(&self) -> Option<f32> {
-            unsafe { self.endpoint.GetMasterVolumeLevelScalar().ok() }
-        }
-
-        pub fn set_scalar(&self, value: f32) {
-            unsafe {
-                let _ = self.endpoint.SetMasterVolumeLevelScalar(value, std::ptr::null());
+                Some(Volume { endpoint, min_db, max_db })
             }
         }
 
