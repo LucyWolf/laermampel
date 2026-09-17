@@ -11,20 +11,38 @@ const LABEL: Color32 = Color32::from_rgb(170, 176, 186);
 
 /// Drehknopf von 0 bis `max`. Ziehen nach oben/unten oder Mausrad ändert, Doppelklick setzt auf 0.
 pub fn knob(ui: &mut Ui, value: &mut f32, max: f32, label: &str, lit: bool) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(64.0, 92.0), Sense::click_and_drag());
+    let text = format!("{:.1}", *value);
+    knob_range(ui, value, 0.0, max, 0.1, text, label, lit)
+}
 
-    let mut new = *value;
+/// Drehknopf in dB von `min_db` bis `max_db`; ganz links heißt „aus“. Doppelklick: aus.
+pub fn knob_db(ui: &mut Ui, value: &mut f32, min_db: f32, max_db: f32, label: &str, lit: bool) -> Response {
+    let text = if *value <= min_db + 0.5 { "aus".to_string() } else { format!("{:.0} dB", *value) };
+    knob_range(ui, value, min_db, max_db, 1.0, text, label, lit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn knob_range(ui: &mut Ui, value: &mut f32, min: f32, max: f32, step: f32, text: String, label: &str, lit: bool) -> Response {
+    let (rect, mut response) = ui.allocate_exact_size(vec2(64.0, 92.0), Sense::click_and_drag());
+    let span = max - min;
+
+    // Ungerundeten Wert zwischen den Bildern merken, sonst gehen kleine Mausbewegungen beim
+    // Runden auf die Schrittweite verloren.
+    let raw_id = response.id.with("ungerundet");
+    let mut raw = ui.data(|d| d.get_temp::<f32>(raw_id)).filter(|r| (r - *value).abs() <= step).unwrap_or(*value);
     if response.dragged() {
-        new -= response.drag_delta().y * max / 150.0;
+        raw -= response.drag_delta().y * span / 150.0;
     }
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        new += scroll / 40.0 * max / 20.0;
+        raw += scroll / 40.0 * span / 20.0;
     }
     if response.double_clicked() {
-        new = 0.0;
+        raw = min;
     }
-    let new = new.clamp(0.0, max);
+    raw = raw.clamp(min, max);
+    ui.data_mut(|d| d.insert_temp(raw_id, raw));
+    let new = ((raw / step).round() * step).clamp(min, max) + 0.0;
     if new != *value {
         *value = new;
         response.mark_changed();
@@ -47,7 +65,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, max: f32, label: &str, lit: bool) -> R
 
     painter.circle_filled(center, radius - 5.0, Color32::from_rgb(58, 63, 72));
     painter.add(Shape::line(arc(start, start + sweep), Stroke::new(4.0, TRACK)));
-    let t = if max > 0.0 { *value / max } else { 0.0 };
+    let t = if span > 0.0 { ((*value - min) / span).clamp(0.0, 1.0) } else { 0.0 };
     if t > 0.0 {
         painter.add(Shape::line(arc(start, start + sweep * t), Stroke::new(4.0, ACCENT)));
     }
@@ -56,7 +74,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, max: f32, label: &str, lit: bool) -> R
         [center + vec2(pointer.cos(), pointer.sin()) * 6.0, center + vec2(pointer.cos(), pointer.sin()) * 15.0],
         Stroke::new(2.0, Color32::WHITE),
     );
-    painter.text(center + vec2(0.0, radius + 3.0), Align2::CENTER_TOP, format!("{:.1}", *value), FontId::proportional(11.0), Color32::WHITE);
+    painter.text(center + vec2(0.0, radius + 3.0), Align2::CENTER_TOP, text, FontId::proportional(11.0), Color32::WHITE);
 
     // Beschriftung, bei Bedarf mit kleiner Lampe (z.B. Gate offen).
     let label_pos = pos2(rect.center().x, rect.bottom() - 2.0);
@@ -115,7 +133,7 @@ pub fn fader(ui: &mut Ui, value: &mut f32, min: f32, max: f32, height: f32) -> R
     response
 }
 
-pub const METER_MIN_DB: f32 = -60.0;
+pub const METER_MIN_DB: f32 = -100.0;
 pub const LIMIT_MIN_DB: f32 = -40.0;
 /// 0 dB = Limiter aus (nur die harte Grenze des Formats).
 pub const LIMIT_OFF_DB: f32 = 0.0;
@@ -141,6 +159,7 @@ pub fn level_meter(
     ui: &mut Ui,
     voice_db: f32,
     muted: bool,
+    gate_threshold_db: Option<f32>,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
@@ -254,6 +273,12 @@ pub fn level_meter(
             let segment = Rect::from_min_max(pos2(column.left(), y1 - segment_height + 1.0), pos2(column.right(), y1));
             painter.rect_filled(segment, CornerRadius::ZERO, if db <= voice_db { color } else { color.gamma_multiply(0.12) });
         }
+    }
+
+    // Gate-Schwelle als dünne weiße Linie: liegt das Grundrauschen darunter, geht das Gate zu.
+    if let Some(db) = gate_threshold_db {
+        let y = to_y(db);
+        painter.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(1.0, Color32::from_white_alpha(200)));
     }
 
     let limit_active = *limit_db < LIMIT_OFF_DB;
