@@ -3,8 +3,6 @@
 //! Läuft auf dem Weg über VB-Cable im Audio-Thread: kein Anlegen von Speicher im laufenden Betrieb.
 
 const GATE_LEVEL_WINDOW_MS: f32 = 10.0;
-/// So weit muss der Pegel unter die Schwelle fallen, bevor das Gate zu zählen beginnt.
-const GATE_HYSTERESIS_DB: f32 = 3.0;
 const COMP_LEVEL_WINDOW_MS: f32 = 50.0;
 /// Liegt der Pegel so weit unter dem letzten Höchstwert, klingt gerade ein Wort aus.
 const TAIL_DB: f32 = 10.0;
@@ -83,19 +81,34 @@ impl Default for Settings {
     }
 }
 
-/// Unter der Schwelle wird das Mikrofon abgesenkt, darüber geht es auf.
+/// Wie stark das Gate unter der Schwelle absenkt: pro dB darunter so viele dB zusätzlich.
+/// Dadurch gleitend statt hart: je höher das Gate, desto niedriger der Pegel (wie bei Voicemeeter).
+pub const GATE_RATIO: f32 = 4.0;
+
+/// Absenkung in dB für einen Pegel, gleitend unter der Schwelle, höchstens `range_db`.
+pub fn gate_reduction_db(level_db: f32, threshold_db: f32, range_db: f32) -> f32 {
+    if level_db >= threshold_db {
+        0.0
+    } else {
+        ((threshold_db - level_db) * (GATE_RATIO - 1.0)).min(range_db.max(0.0))
+    }
+}
+
+/// Gilt als offen, solange kaum abgesenkt wird.
+pub const GATE_OPEN_BELOW_DB: f32 = 1.0;
+
+/// Gleitendes Gate (Expander): unter der Schwelle umso leiser, je weiter darunter.
 pub struct Gate {
     sample_rate: f32,
     level_k: f32,
     attack_k: f32,
     release_k: f32,
-    closed_gain: f32,
     hold_samples: usize,
     threshold_db: f32,
+    range_db: f32,
 
     power: f32,
-    gain: f32,
-    open: bool,
+    reduction_db: f32,
     hold_left: usize,
 }
 
@@ -106,12 +119,11 @@ impl Gate {
             level_k: smoothing(GATE_LEVEL_WINDOW_MS, sample_rate),
             attack_k: 1.0,
             release_k: 1.0,
-            closed_gain: 0.0,
             hold_samples: 0,
-            threshold_db: 0.0,
+            threshold_db: -100.0,
+            range_db: 0.0,
             power: 0.0,
-            gain: 1.0,
-            open: true,
+            reduction_db: 0.0,
             hold_left: 0,
         }
     }
@@ -120,7 +132,7 @@ impl Gate {
         self.attack_k = smoothing(s.attack_ms, self.sample_rate);
         self.release_k = smoothing(s.release_ms, self.sample_rate);
         self.threshold_db = s.threshold_db;
-        self.closed_gain = db_to_gain(-s.range_db.max(0.0));
+        self.range_db = s.range_db.max(0.0);
         self.hold_samples = (s.hold_ms.max(0.0) / 1000.0 * self.sample_rate) as usize;
     }
 
@@ -129,26 +141,23 @@ impl Gate {
         self.power += (x * x - self.power) * self.level_k;
         let level_db = power_db(self.power);
 
-        if level_db > self.threshold_db {
-            self.open = true;
+        let mut target = gate_reduction_db(level_db, self.threshold_db, self.range_db);
+        if level_db >= self.threshold_db {
             self.hold_left = self.hold_samples;
-        } else if self.open && level_db < self.threshold_db - GATE_HYSTERESIS_DB {
-            // Knapp unter der Schwelle nicht zählen, sonst flattert es am Wortende.
-            if self.hold_left > 0 {
-                self.hold_left -= 1;
-            } else {
-                self.open = false;
-            }
+        } else if self.hold_left > 0 {
+            // Nach dem letzten Wort kurz nicht stärker absenken, damit Wortenden nicht abreißen.
+            self.hold_left -= 1;
+            target = target.min(self.reduction_db);
         }
 
-        let target = if self.open { 1.0 } else { self.closed_gain };
-        let k = if target > self.gain { self.attack_k } else { self.release_k };
-        self.gain += (target - self.gain) * k;
-        self.gain
+        // Aufgehen (weniger Absenkung) mit „Öffnen“, Zugehen mit „Schließen“.
+        let k = if target < self.reduction_db { self.attack_k } else { self.release_k };
+        self.reduction_db += (target - self.reduction_db) * k;
+        db_to_gain(-self.reduction_db)
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.reduction_db < GATE_OPEN_BELOW_DB
     }
 
     pub fn level_db(&self) -> f32 {
@@ -418,6 +427,23 @@ mod tests {
         let out = run(&mut chain, &input);
         let reduction = tail_rms(&input) - tail_rms(&out);
         assert!((reduction - 40.0).abs() < 1.0, "{reduction:.1} dB abgesenkt");
+    }
+
+    #[test]
+    fn gate_senkt_gleitend_ab() {
+        // Knapp unter der Schwelle nur wenig, weiter darunter mehr: je höher das Gate, desto leiser.
+        let input = sine(RATE as usize, -48.0);
+        let mut previous = f32::MAX;
+        for threshold in [-50.0, -47.0, -45.0, -42.0] {
+            let mut chain = Chain::new(RATE);
+            let mut s = gate_settings();
+            s.gate.threshold_db = threshold;
+            chain.set(s);
+            let out = tail_rms(&run(&mut chain, &input));
+            assert!(out < previous || threshold == -50.0, "Schwelle {threshold}: {out:.1} dB, vorher {previous:.1}");
+            previous = out;
+        }
+        assert!((previous - (-48.0 - 3.0 * 6.0)).abs() < 1.5, "bei -42 erwartet -66 dB, war {previous:.1}");
     }
 
     #[test]

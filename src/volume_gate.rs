@@ -1,38 +1,45 @@
 //! Gate und Mute über den Mikrofon-Regler von Windows: ohne VB-Cable, ohne Adminrechte.
 //!
-//! Unter der Schwelle wird der Windows-Regler des Mikrofons heruntergezogen, das gilt für alle
-//! Programme. Ganz stumm geht nicht, sonst hört die Lärmampel selbst nicht mehr, wann man wieder
-//! spricht. Die Absenkung wird bei der Messung wieder herausgerechnet.
+//! Das Gate arbeitet gleitend (wie in `dsp`): unter der Schwelle zieht es den Windows-Regler umso
+//! weiter herunter, je leiser es ist. Weil dann auch die Lärmampel leiser hört, wird die Absenkung
+//! aus der Messung wieder herausgerechnet. Wie stark das Gerät wirklich auf den Regler reagiert,
+//! misst ein kurzer Test in Sprechpausen; viele Headsets senken deutlich stärker ab als angegeben.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// So weit muss der Pegel unter die Schwelle fallen, bevor das Gate zu zählen beginnt.
-const HYSTERESIS_DB: f32 = 3.0;
+use crate::dsp::{GATE_OPEN_BELOW_DB, gate_reduction_db};
+
 /// So oft wird nachgesehen, ob jemand den Windows-Regler von Hand verstellt hat.
 const RESYNC_INTERVAL: Duration = Duration::from_millis(500);
-/// Nach dem Zugehen erst kurz warten, dann messen, wie stark der Regler wirklich absenkt.
-const CALIBRATION_SETTLE: Duration = Duration::from_millis(80);
-const CALIBRATION_END: Duration = Duration::from_millis(350);
-/// Senkt das Gerät mehr ab als gewollt, wird der Regler um so viel weniger weit heruntergezogen.
-const MAX_BACKOFF_DB: f32 = 60.0;
-/// Glättung des Pegels, aus dem der Wert kurz vor dem Zugehen stammt.
-const SMOOTHING: f32 = 0.2;
-/// Das Gate entscheidet über einen kurz geglätteten Pegel, sonst reißen Rauschspitzen es auf.
-const DECISION_SMOOTHING: f32 = 0.25;
-/// So weit über der Schwelle geht es sofort auf, ohne auf die Glättung zu warten (Wortanfang).
-const INSTANT_OPEN_DB: f32 = 10.0;
+/// Glättung des Pegels, auf den das Gate reagiert, damit Rauschspitzen es nicht aufreißen.
+const LEVEL_SMOOTHING: f32 = 0.3;
+/// Kleinere Änderungen am Regler lassen wir weg, sonst wird er ständig verstellt.
+const MIN_STEP_DB: f32 = 0.5;
+
+/// Test, wie stark das Gerät reagiert: Regler kurz um so viel herunter, Pegel vorher/nachher vergleichen.
+const TEST_DIP_DB: f32 = 10.0;
+const TEST_SETTLE: Duration = Duration::from_millis(60);
+const TEST_LENGTH: Duration = Duration::from_millis(260);
+/// Bis zum ersten Test wird der Regler höchstens so weit gezogen, falls das Gerät viel stärker reagiert.
+const UNTESTED_MAX_DB: f32 = 10.0;
+/// Nur in ruhigen Momenten testen, und nicht zu oft.
+const TEST_INTERVAL: Duration = Duration::from_secs(30);
+const TEST_STEADY_DB: f32 = 2.0;
+const TEST_STEADY_FOR: Duration = Duration::from_millis(400);
 
 pub struct GateParams {
     pub threshold_db: f32,
     pub range_db: f32,
+    pub attack_ms: f32,
     pub hold_ms: f32,
+    pub release_ms: f32,
 }
 
-/// Merkt sich die ursprüngliche Lautstärke auf der Platte, falls die Lärmampel abstürzt,
-/// während das Gate zu ist. Beim nächsten Start wird sie dann zurückgesetzt.
+/// Merkt sich die ursprüngliche Einstellung auf der Platte, falls die Lärmampel abstürzt,
+/// während der Regler heruntergezogen oder stumm ist. Beim nächsten Start wird sie zurückgesetzt.
 #[derive(Serialize, Deserialize)]
 struct Leftover {
     endpoint_id: String,
@@ -46,33 +53,36 @@ fn leftover_path() -> Option<PathBuf> {
     Some(dirs.data_local_dir().join("gate_lautstaerke.json"))
 }
 
+enum Test {
+    Idle,
+    /// Regler ist für den Test um `TEST_DIP_DB` tiefer als `restore_db`. Gemessen wird ungekorrigiert.
+    Running { started: Instant, restore_db: f32, before_raw_db: f32, sum: f32, count: u32 },
+}
+
 pub struct VolumeGate {
     endpoint_id: Option<String>,
     #[cfg(windows)]
     volume: Option<win::Volume>,
-    open: bool,
-    below_since: Option<Instant>,
-    /// Stand des Windows-Reglers, bevor das Gate ihn angefasst hat.
+    muted: bool,
+    /// Stand des Windows-Reglers, bevor die Lärmampel ihn angefasst hat.
     original_db: f32,
-    /// Was das Gate zuletzt eingestellt hat.
+    /// Was die Lärmampel zuletzt eingestellt hat.
     applied_db: f32,
     last_resync: Instant,
+    last_tick: Instant,
 
-    /// Geglätteter echter Pegel, solange offen.
+    /// Wie viele dB das Gerät pro dB am Regler wirklich absenkt (gemessen).
+    response: f32,
     smoothed_db: Option<f32>,
-    /// Pegel kurz vor dem Zugehen; daran wird die tatsächliche Absenkung gemessen.
-    before_close_db: f32,
-    closed_at: Option<Instant>,
-    calibration_sum: f32,
-    calibration_count: u32,
-    /// Gemessene Absenkung. Viele Headsets senken deutlich stärker ab, als der Regler in dB angibt.
-    measured_attenuation_db: Option<f32>,
-    /// Um so viel wird der Regler weniger weit heruntergezogen, damit die Lärmampel noch hört.
-    backoff_db: f32,
-    /// Geglättete Leistung für die Auf/Zu-Entscheidung.
-    decision_power: Option<f32>,
-    /// Hat die Lärmampel das Mikrofon in Windows stumm geschaltet?
-    muted: bool,
+    /// Geglätteter gemessener Pegel ohne Korrektur, für den Test.
+    smoothed_raw_db: Option<f32>,
+    /// Aktuelle Absenkung durch das Gate in dB (wie sie bei anderen ankommt).
+    reduction_db: f32,
+    last_above: Instant,
+
+    test: Test,
+    last_test: Option<Instant>,
+    steady_since: Instant,
 }
 
 impl VolumeGate {
@@ -81,35 +91,36 @@ impl VolumeGate {
             endpoint_id: None,
             #[cfg(windows)]
             volume: None,
-            open: true,
-            below_since: None,
+            muted: false,
             original_db: 0.0,
             applied_db: 0.0,
             last_resync: Instant::now(),
+            last_tick: Instant::now(),
+            response: 1.0,
             smoothed_db: None,
-            before_close_db: -120.0,
-            closed_at: None,
-            calibration_sum: 0.0,
-            calibration_count: 0,
-            measured_attenuation_db: None,
-            backoff_db: 0.0,
-            decision_power: None,
-            muted: false,
+            smoothed_raw_db: None,
+            reduction_db: 0.0,
+            last_above: Instant::now(),
+            test: Test::Idle,
+            last_test: None,
+            steady_since: Instant::now(),
         };
         gate.restore_leftover();
         gate
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.reduction_db < GATE_OPEN_BELOW_DB
     }
 
-    /// Wie viel leiser das Mikrofon gerade bei der Lärmampel ankommt als ohne Gate.
-    pub fn attenuation_db(&self) -> f32 {
-        if !self.has_volume() || (self.original_db - self.applied_db).abs() < 0.05 {
-            return 0.0;
-        }
-        self.measured_attenuation_db.unwrap_or(self.original_db - self.applied_db).max(0.0)
+    /// Wie viel leiser andere dich gerade hören.
+    pub fn reduction_db(&self) -> f32 {
+        self.reduction_db
+    }
+
+    /// Wie viel leiser die Lärmampel das Mikrofon gerade hört, weil der Regler unten steht.
+    fn heard_attenuation_db(&self) -> f32 {
+        if self.has_volume() { ((self.original_db - self.applied_db) * self.response).max(0.0) } else { 0.0 }
     }
 
     fn has_volume(&self) -> bool {
@@ -119,8 +130,8 @@ impl VolumeGate {
         false
     }
 
-    /// Einmal pro Bild. `device_id` ist die cpal-ID, `measured_db` der gerade gemessene Pegel
-    /// (mit abgesenktem Regler). Gibt den echten Pegel zurück, also mit herausgerechneter Absenkung.
+    /// Einmal pro Bild. `device_id` ist die cpal-ID, `measured_db` der gerade gemessene Pegel.
+    /// Gibt den echten Pegel zurück, also mit herausgerechneter Absenkung.
     pub fn update(
         &mut self,
         device_id: Option<&str>,
@@ -129,7 +140,9 @@ impl VolumeGate {
         measured_db: Option<f32>,
         params: &GateParams,
     ) -> Option<f32> {
-        let real_db = measured_db.map(|db| db + self.attenuation_db());
+        let dt = self.last_tick.elapsed().as_secs_f32().min(0.2);
+        self.last_tick = Instant::now();
+        let real_db = measured_db.map(|db| db + self.heard_attenuation_db());
 
         let endpoint_id = device_id.and_then(|id| id.strip_prefix("wasapi:")).map(str::to_string);
         if endpoint_id != self.endpoint_id {
@@ -150,123 +163,146 @@ impl VolumeGate {
             self.muted = mute;
             self.remember_leftover();
         }
-        if !gate {
-            if !self.open {
-                self.open = true;
-                self.below_since = None;
-                let original = self.original_db;
-                self.write_db(original);
-                self.applied_db = original;
-                self.remember_leftover();
-            }
-            return real_db;
-        }
 
-        // Hat jemand den Regler von Hand verstellt, solange das Gate offen war: neuer Ausgangswert.
-        if self.open && self.last_resync.elapsed() >= RESYNC_INTERVAL {
+        // Von Hand verstellter Regler, solange nichts abgesenkt ist: neuer Ausgangswert.
+        if self.reduction_db < MIN_STEP_DB
+            && matches!(self.test, Test::Idle)
+            && self.last_resync.elapsed() >= RESYNC_INTERVAL
+        {
             self.last_resync = Instant::now();
             if let Some(current) = self.read_db()
-                && (current - self.applied_db).abs() > 0.5
+                && (current - self.applied_db).abs() > MIN_STEP_DB
             {
                 self.original_db = current;
                 self.applied_db = current;
             }
         }
 
-        if self.open
-            && let Some(level) = real_db
-        {
+        if !gate {
+            self.reduction_db = 0.0;
+            self.apply_reduction();
+            return real_db;
+        }
+
+        if let (Some(level), Some(raw)) = (real_db, measured_db) {
             let previous = self.smoothed_db.unwrap_or(level);
-            self.smoothed_db = Some(previous + (level - previous) * SMOOTHING);
-        }
-        if !self.open {
-            self.calibrate(measured_db, params.range_db);
-        }
-
-        if let Some(level) = real_db {
-            let power = 10f32.powf(level / 10.0);
-            let smoothed = match self.decision_power {
-                Some(previous) => previous + (power - previous) * DECISION_SMOOTHING,
-                None => power,
-            };
-            self.decision_power = Some(smoothed);
-            let decision_db = 10.0 * smoothed.max(1e-12).log10();
-
-            if decision_db > params.threshold_db || level > params.threshold_db + INSTANT_OPEN_DB {
-                if !self.open {
-                    self.closed_at = None;
-                }
-                self.open = true;
-                self.below_since = None;
-            } else if decision_db < params.threshold_db - HYSTERESIS_DB {
-                let since = *self.below_since.get_or_insert_with(Instant::now);
-                if self.open && since.elapsed() >= Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
-                    self.open = false;
-                    self.start_calibration();
-                }
+            let smoothed = previous + (level - previous) * LEVEL_SMOOTHING;
+            self.smoothed_db = Some(smoothed);
+            let previous_raw = self.smoothed_raw_db.unwrap_or(raw);
+            let smoothed_raw = previous_raw + (raw - previous_raw) * LEVEL_SMOOTHING;
+            self.smoothed_raw_db = Some(smoothed_raw);
+            if (raw - smoothed_raw).abs() > TEST_STEADY_DB {
+                self.steady_since = Instant::now();
             }
-        }
+            if self.run_test(raw) {
+                // Während des Tests keine Entscheidungen, der Regler steht absichtlich tiefer.
+                return real_db;
+            }
 
-        let target = if self.open { self.original_db } else { self.closed_db(params.range_db) };
-        if (target - self.applied_db).abs() > 0.05 {
+            let mut target = gate_reduction_db(smoothed, params.threshold_db, params.range_db);
+            if smoothed >= params.threshold_db {
+                self.last_above = Instant::now();
+            } else if self.last_above.elapsed() < Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
+                target = target.min(self.reduction_db);
+            }
+            let ms = if target < self.reduction_db { params.attack_ms } else { params.release_ms };
+            let k = if ms <= 0.0 { 1.0 } else { 1.0 - (-dt * 1000.0 / ms).exp() };
+            self.reduction_db += (target - self.reduction_db) * k;
+        }
+        self.apply_reduction();
+        self.maybe_start_test();
+        real_db
+    }
+
+    /// Regler so weit herunter, dass andere um `reduction_db` leiser hören.
+    fn apply_reduction(&mut self) {
+        let mut asked = self.reduction_db / self.response.max(0.1);
+        if self.last_test.is_none() {
+            asked = asked.min(UNTESTED_MAX_DB);
+        }
+        let wanted = self.original_db - asked;
+        let target = self.clamp_db(wanted);
+        let back_to_start = self.reduction_db < MIN_STEP_DB && target != self.applied_db;
+        if (target - self.applied_db).abs() >= MIN_STEP_DB || back_to_start {
             self.write_db(target);
             self.applied_db = target;
             self.remember_leftover();
         }
-        real_db
     }
 
-    fn start_calibration(&mut self) {
-        self.before_close_db = self.smoothed_db.unwrap_or(-120.0);
-        self.closed_at = Some(Instant::now());
-        self.calibration_sum = 0.0;
-        self.calibration_count = 0;
+    /// In einem ruhigen Moment (Pegel gleichmäßig, egal ob Gate offen oder zu) den Regler kurz
+    /// tiefer stellen und messen, wie viel leiser es wirklich wird.
+    fn maybe_start_test(&mut self) {
+        let due = self.last_test.is_none_or(|t| t.elapsed() >= TEST_INTERVAL);
+        let steady = self.steady_since.elapsed() >= TEST_STEADY_FOR;
+        if !due || !steady || !matches!(self.test, Test::Idle) {
+            return;
+        }
+        let Some(before_raw_db) = self.smoothed_raw_db else { return };
+        // Zu leise: der Unterschied ginge im Grundrauschen der Messung unter.
+        if before_raw_db < -85.0 {
+            return;
+        }
+        let restore_db = self.applied_db;
+        let dip = self.clamp_db(restore_db - TEST_DIP_DB);
+        if restore_db - dip < 3.0 {
+            return;
+        }
+        self.write_db(dip);
+        self.applied_db = dip;
+        self.remember_leftover();
+        self.test = Test::Running { started: Instant::now(), restore_db, before_raw_db, sum: 0.0, count: 0 };
     }
 
-    /// Kurz nach dem Zugehen: wie viel leiser kommt das Mikrofon wirklich an?
-    /// Ist es viel mehr als gewollt, den Regler weniger weit herunterziehen und neu messen.
-    fn calibrate(&mut self, measured_db: Option<f32>, range_db: f32) {
-        let Some(closed_at) = self.closed_at else { return };
-        let elapsed = closed_at.elapsed();
-        if elapsed < CALIBRATION_SETTLE {
-            return;
+    /// Gibt `true` zurück, solange ein Test läuft.
+    fn run_test(&mut self, raw_db: f32) -> bool {
+        let dip = match &self.test {
+            Test::Running { restore_db, .. } => restore_db - self.applied_db,
+            Test::Idle => return false,
+        };
+        let Test::Running { started, restore_db, before_raw_db, sum, count } = &mut self.test else { return false };
+        let elapsed = started.elapsed();
+        if elapsed < TEST_SETTLE {
+            return true;
         }
-        if elapsed < CALIBRATION_END {
-            if let Some(db) = measured_db {
-                self.calibration_sum += db;
-                self.calibration_count += 1;
-            }
-            return;
+        if elapsed < TEST_LENGTH {
+            *sum += raw_db;
+            *count += 1;
+            return true;
         }
-        self.closed_at = None;
-        if self.calibration_count == 0 {
-            return;
+        let (restore, before, total, n) = (*restore_db, *before_raw_db, *sum, *count);
+        self.test = Test::Idle;
+        self.last_test = Some(Instant::now());
+        self.write_db(restore);
+        self.applied_db = restore;
+        self.remember_leftover();
+        if n > 0 && dip > 0.0 {
+            let dropped = before - total / n as f32;
+            let response = (dropped / dip).clamp(0.3, 6.0);
+            log!("Gate: Regler {dip:.0} dB tiefer → {dropped:.1} dB leiser (Faktor {response:.2})");
+            self.response = response;
         }
-        let after_db = self.calibration_sum / self.calibration_count as f32;
-        let attenuation = (self.before_close_db - after_db).clamp(0.0, 90.0);
-        self.measured_attenuation_db = Some(attenuation);
-
-        let wanted = range_db.max(0.0);
-        if attenuation > wanted + 6.0 && self.backoff_db < MAX_BACKOFF_DB {
-            self.backoff_db = (self.backoff_db + (attenuation - wanted) * 0.7).min(MAX_BACKOFF_DB);
-            log!("Gate: Gerät senkt {attenuation:.0} dB statt {wanted:.0} dB ab, Regler {:.0} dB weniger weit runter", self.backoff_db);
-            // Mit dem neuen Wert gleich noch einmal messen.
-            self.closed_at = Some(Instant::now());
-            self.calibration_sum = 0.0;
-            self.calibration_count = 0;
-            self.measured_attenuation_db = None;
-        }
+        false
     }
 
-    /// Regler zurück auf den ursprünglichen Wert und loslassen.
+    fn clamp_db(&self, db: f32) -> f32 {
+        #[cfg(windows)]
+        if let Some(volume) = &self.volume {
+            return db.clamp(volume.min_db, self.original_db);
+        }
+        db.min(self.original_db)
+    }
+
+    /// Regler und Stummschaltung zurück auf den ursprünglichen Stand und loslassen.
     pub fn release(&mut self) {
-        // Nichts angefasst: nichts zu tun (wird sonst jedes Bild aufgerufen, solange das Gate aus ist).
+        // Nichts angefasst: nichts zu tun (wird sonst jedes Bild aufgerufen, solange alles aus ist).
         if !self.has_volume() {
             return;
         }
         if (self.applied_db - self.original_db).abs() > 0.05 {
             let original = self.original_db;
             self.write_db(original);
+            self.applied_db = original;
         }
         if self.muted {
             self.set_mute(false);
@@ -276,9 +312,10 @@ impl VolumeGate {
         {
             self.volume = None;
         }
-        self.open = true;
-        self.below_since = None;
-        self.decision_power = None;
+        self.reduction_db = 0.0;
+        self.smoothed_db = None;
+        self.smoothed_raw_db = None;
+        self.test = Test::Idle;
         self.remember_leftover();
     }
 
@@ -327,9 +364,9 @@ impl VolumeGate {
         self.original_db = current;
         self.applied_db = current;
         self.volume = Some(volume);
-        self.open = true;
-        self.backoff_db = 0.0;
-        self.measured_attenuation_db = None;
+        self.reduction_db = 0.0;
+        self.response = 1.0;
+        self.last_test = None;
         log!("Gate: nutzt den Windows-Regler von {id}, steht auf {current:.1} dB");
         true
     }
@@ -337,14 +374,6 @@ impl VolumeGate {
     #[cfg(not(windows))]
     fn attach(&mut self) -> bool {
         false
-    }
-
-    fn closed_db(&self, range_db: f32) -> f32 {
-        #[cfg(windows)]
-        if let Some(volume) = &self.volume {
-            return (self.original_db - range_db.max(0.0) + self.backoff_db).min(self.original_db).max(volume.min_db);
-        }
-        self.original_db - range_db.max(0.0) + self.backoff_db
     }
 
     fn read_db(&self) -> Option<f32> {

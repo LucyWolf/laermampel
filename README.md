@@ -39,8 +39,8 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
-- **Gate** (−100 bis 0 dB): Schwelle direkt in dB, ganz links (−100) ist aus. Unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. Ist das Gate zu, zeigt die Pegelanzeige keinen Ausschlag mehr (wie bei Voicemeeter); die Lampe am Knopf zeigt, ob es gerade offen ist.
-  Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows herunter (gilt für alle Programme, ohne Einrichten). Wie stark das Gerät dabei wirklich absenkt, wird gemessen und ausgeglichen. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
+- **Gate** (−100 bis 0 dB): gleitend wie bei Voicemeeter. Über der Schwelle bleibt alles unverändert, darunter wird pro dB darunter um 3 dB zusätzlich abgesenkt (höchstens um die eingestellte Absenkung). Je höher das Gate, desto niedriger der Pegel; die Anzeige zeigt den Pegel nach dem Gate. Ganz links (−100) ist aus.
+  Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows gleitend herunter (gilt für alle Programme). In ruhigen Momenten prüft ein kurzer Test (10 dB für eine Viertelsekunde, höchstens alle 30 s), wie stark das Gerät auf den Regler reagiert. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
 - **Pegelanzeige:** ein Balken (ein Mikrofon ist mono) mit dB-Skala; ein kleines Dreieck an der Skala zeigt die Gate-Schwelle (grün offen, grau zu). Zeigt, was nach Gate & Co. übrig bleibt; bei Mute grau deine Stimme.
   - Ist **Ton** an, gibt es eine **gelbe** und eine **rote** Linie mit Pfeil am Rand für die Ampel-Schwellen, zum Ziehen.
