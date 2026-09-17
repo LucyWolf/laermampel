@@ -1,7 +1,6 @@
 //! Die eigentliche Bearbeitung des Mikrofons: Gate → Comp. → Fader/Mute → Limiter.
 //!
-//! Wird an zwei Stellen benutzt: im Audio-Filter (APO) und in der Lärmampel für den Weg über
-//! VB-Cable. Kein Anlegen von Speicher im laufenden Betrieb, damit es im Echtzeit-Thread läuft.
+//! Läuft auf dem Weg über VB-Cable im Audio-Thread: kein Anlegen von Speicher im laufenden Betrieb.
 
 const GATE_LEVEL_WINDOW_MS: f32 = 10.0;
 /// So weit muss der Pegel unter die Schwelle fallen, bevor das Gate zu zählen beginnt.
@@ -14,7 +13,6 @@ const LIMITER_RELEASE_MS: f32 = 100.0;
 /// Fader und Mute weich überblenden, sonst knackt es.
 const FADER_SMOOTHING_MS: f32 = 10.0;
 const METER_WINDOW_MS: f32 = 50.0;
-const METER_PEAK_DECAY_DB_PER_SECOND: f32 = 20.0;
 
 pub fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
@@ -235,7 +233,6 @@ impl Limiter {
 
 /// Die ganze Kette für ein Mikrofon mit beliebig vielen Kanälen.
 pub struct Chain {
-    sample_rate: f32,
     settings: Settings,
     configured: bool,
     gate: Gate,
@@ -248,13 +245,11 @@ pub struct Chain {
 
     meter_k: f32,
     out_power: f32,
-    out_peak_db: f32,
 }
 
 impl Chain {
     pub fn new(sample_rate: f32) -> Self {
         let mut chain = Self {
-            sample_rate,
             settings: Settings::default(),
             configured: false,
             gate: Gate::new(sample_rate),
@@ -265,7 +260,6 @@ impl Chain {
             fader_gain: 1.0,
             meter_k: smoothing(METER_WINDOW_MS, sample_rate),
             out_power: 0.0,
-            out_peak_db: -120.0,
         };
         chain.set(Settings::default());
         chain
@@ -310,16 +304,10 @@ impl Chain {
 
         let out = mono * gain;
         self.out_power += (out * out - self.out_power) * self.meter_k;
-        let peak_db = 20.0 * (peak.min(self.ceiling)).max(1e-6).log10();
-        self.out_peak_db = (self.out_peak_db - METER_PEAK_DECAY_DB_PER_SECOND / self.sample_rate).max(peak_db);
     }
 
     pub fn out_level_db(&self) -> f32 {
         power_db(self.out_power)
-    }
-
-    pub fn out_peak_db(&self) -> f32 {
-        self.out_peak_db
     }
 
     pub fn gate_open(&self) -> bool {

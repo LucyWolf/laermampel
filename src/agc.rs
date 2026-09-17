@@ -5,12 +5,20 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use laermampel_apo::dsp::{Chain, Settings};
-use laermampel_apo::shared::Feedback;
 use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::audio::{Fault, InputDevice, describe};
+use crate::dsp::{Chain, Settings};
+
+/// Rückmeldung der Kette für die Anzeige.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Feedback {
+    pub out_level_db: f32,
+    pub gate_open: bool,
+    pub gate_level_db: f32,
+    pub comp_gain_db: f32,
+}
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 /// Meldung, wenn gar kein VB-Cable da ist. Das ist kein Fehler, nur nicht eingerichtet.
@@ -89,9 +97,7 @@ impl VoiceChain {
             }
             if let Ok(mut feedback) = self.control.feedback.try_lock() {
                 *feedback = Feedback {
-                    input_level_db: -120.0,
                     out_level_db: self.chain.out_level_db(),
-                    out_peak_db: self.chain.out_peak_db(),
                     gate_open: self.chain.gate_open(),
                     gate_level_db: self.chain.gate_level_db(),
                     comp_gain_db: self.chain.comp_gain_db(),

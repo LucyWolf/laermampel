@@ -1525,7 +1525,6 @@ dependencies = [
  "cpal",
  "directories",
  "eframe",
- "laermampel-apo",
  "raw-window-handle",
  "ringbuf",
  "semver",
@@ -1536,14 +1535,6 @@ dependencies = [
  "windows",
  "windows-sys 0.61.2",
  "winresource",
-]
-
-[[package]]
-name = "laermampel-apo"
-version = "0.1.0"
-dependencies = [
- "windows",
- "windows-core",
 ]
 
 [[package]]
