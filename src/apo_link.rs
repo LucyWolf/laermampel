@@ -3,6 +3,9 @@
 
 use std::time::{Duration, Instant};
 
+use laermampel_apo::dsp::Settings;
+use laermampel_apo::shared::Feedback;
+
 /// Bleibt das Lebenszeichen so lange stehen, gilt der Filter als nicht aktiv.
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -13,6 +16,8 @@ pub struct ApoLink {
     last_try: Option<Instant>,
     last_beat: u32,
     last_beat_change: Option<Instant>,
+    /// Ein Filter läuft, aber mit altem Aufbau des gemeinsamen Speichers: neu einrichten.
+    outdated: bool,
 }
 
 impl ApoLink {
@@ -23,6 +28,7 @@ impl ApoLink {
             last_try: None,
             last_beat: 0,
             last_beat_change: None,
+            outdated: false,
         }
     }
 
@@ -34,7 +40,9 @@ impl ApoLink {
 
             if self.mapping.is_none() && self.last_try.is_none_or(|t| t.elapsed() >= RETRY_INTERVAL) {
                 self.last_try = Some(Instant::now());
-                self.mapping = Mapping::open().filter(|m| m.params().is_valid() && m.params().version() == VERSION);
+                let opened = Mapping::open().filter(|m| m.params().is_valid());
+                self.outdated = opened.as_ref().is_some_and(|m| m.params().version() != VERSION);
+                self.mapping = opened.filter(|m| m.params().version() == VERSION);
                 if self.mapping.is_some() {
                     log!("APO: Verbindung zum Filter hergestellt");
                 }
@@ -54,21 +62,24 @@ impl ApoLink {
         self.last_beat_change.is_some_and(|t| t.elapsed() < ALIVE_TIMEOUT)
     }
 
-    pub fn send(&self, gain_db: f32, muted: bool) {
-        #[cfg(windows)]
-        if let Some(mapping) = &self.mapping {
-            mapping.params().set_gain_db(gain_db);
-            mapping.params().set_muted(muted);
-        }
-        #[cfg(not(windows))]
-        let _ = (gain_db, muted);
+    pub fn outdated(&self) -> bool {
+        self.outdated
     }
 
-    /// Pegel vor dem Filter, also deine echte Lautstärke.
-    pub fn input_level_db(&self) -> Option<f32> {
+    pub fn send(&self, settings: &Settings) {
+        #[cfg(windows)]
+        if let Some(mapping) = &self.mapping {
+            mapping.params().set_settings(settings);
+        }
+        #[cfg(not(windows))]
+        let _ = settings;
+    }
+
+    /// Rückmeldung des Filters, nur solange er wirklich läuft.
+    pub fn feedback(&self) -> Option<Feedback> {
         #[cfg(windows)]
         if self.active() {
-            return self.mapping.as_ref().map(|m| m.params().input_level_db());
+            return self.mapping.as_ref().map(|m| m.params().feedback());
         }
         None
     }

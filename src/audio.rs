@@ -7,7 +7,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::HeapRb;
 use ringbuf::traits::Split;
 
-use crate::agc::{self, AgcParams, VoiceChain};
+use crate::agc::{self, ChainControl, VoiceChain};
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
 const BLOCK_SECONDS: f32 = 0.02;
@@ -94,7 +94,7 @@ struct Shared {
 /// Mikrofon für andere Programme einschalten: wohin ausgeben und mit welchen Werten.
 pub struct VoiceSetup {
     pub output_id: Option<String>,
-    pub params: Arc<AgcParams>,
+    pub control: Arc<ChainControl>,
 }
 
 pub struct Meter {
@@ -145,7 +145,7 @@ impl Meter {
                 Ok((stream, name)) => {
                     output = Some(stream);
                     agc_output_name = Some(name);
-                    chain = Some(VoiceChain::new(input_rate, setup.params, producer));
+                    chain = Some(VoiceChain::new(input_rate, setup.control, producer));
                 }
                 Err(e) => agc_error = Some(e),
             }

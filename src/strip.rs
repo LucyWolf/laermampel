@@ -142,6 +142,7 @@ pub fn level_meter(
     voice_db: f32,
     out_db: f32,
     out_peak_db: f32,
+    muted: bool,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
@@ -242,10 +243,15 @@ pub fn level_meter(
 
     const SEGMENTS: usize = 40;
     let segment_height = inner.height() / SEGMENTS as f32;
-    for (column, level) in columns.iter().zip([voice_db, out_db]) {
+    // Stumm: alles grau, aber beide Balken zeigen weiter deine Stimme, damit man sieht, dass das
+    // Mikrofon hört. Rausgehen tut ja nichts.
+    let levels = if muted { [voice_db, voice_db] } else { [voice_db, out_db] };
+    for (column, level) in columns.iter().zip(levels) {
         for i in 0..SEGMENTS {
             let db = METER_MIN_DB + (i as f32 + 0.5) / SEGMENTS as f32 * -METER_MIN_DB;
-            let color = if db > -3.0 {
+            let color = if muted {
+                Color32::from_gray(150)
+            } else if db > -3.0 {
                 RED
             } else if db > -12.0 {
                 YELLOW
@@ -257,7 +263,7 @@ pub fn level_meter(
             painter.rect_filled(segment, CornerRadius::ZERO, if db <= level { color } else { color.gamma_multiply(0.12) });
         }
     }
-    if out_peak_db > METER_MIN_DB {
+    if out_peak_db > METER_MIN_DB && !muted {
         let y = to_y(out_peak_db);
         painter.line_segment([pos2(columns[1].left(), y), pos2(columns[1].right(), y)], Stroke::new(2.0, Color32::WHITE));
     }

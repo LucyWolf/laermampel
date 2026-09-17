@@ -4,6 +4,7 @@
 //! bevor Discord, Spiele usw. es bekommen. So wirken Lautstärke und Mute in allen Programmen,
 //! ohne virtuelles Gerät. Die Lärmampel stellt die Werte über einen gemeinsamen Speicher ein.
 
+pub mod dsp;
 pub mod shared;
 
 #[cfg(windows)]

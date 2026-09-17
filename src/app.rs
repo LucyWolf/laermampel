@@ -3,8 +3,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, ViewportCommand, ViewportId};
 
-use crate::agc::{self, AgcParams};
+use crate::agc::{self, ChainControl};
 use crate::apo_link::ApoLink;
+use laermampel_apo::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
 #[cfg(windows)]
 use crate::apo_setup;
 use crate::audio::{self, InputDevice, Meter, VoiceSetup};
@@ -82,7 +83,7 @@ pub struct LaermampelApp {
     last_retry: Instant,
     devices: Vec<InputDevice>,
     output_devices: Vec<InputDevice>,
-    agc_params: Arc<AgcParams>,
+    chain_control: Arc<ChainControl>,
 
     level: Level,
     last_tick: Instant,
@@ -134,7 +135,7 @@ impl LaermampelApp {
             last_retry: Instant::now(),
             devices: audio::list_input_devices(),
             output_devices: agc::list_output_devices(),
-            agc_params: Arc::new(AgcParams::default()),
+            chain_control: Arc::new(ChainControl::default()),
             level: Level::new(),
             last_tick: Instant::now(),
             red_count: 0,
@@ -167,7 +168,7 @@ impl LaermampelApp {
             log!("Ausgabe-Auswahl verworfen, kein virtuelles Gerät: {id}");
             app.settings.agc_output_id = None;
         }
-        app.sync_agc_params();
+        app.sync_chain();
         app.restart_meter();
         app.updater.check(ctx);
         app
@@ -179,7 +180,7 @@ impl LaermampelApp {
         // Der Kanalzug gibt immer auf VB-Cable aus, sofern vorhanden.
         let voice_setup = Some(VoiceSetup {
             output_id: self.settings.agc_output_id.clone(),
-            params: Arc::clone(&self.agc_params),
+            control: Arc::clone(&self.chain_control),
         });
         let Some(device_id) = self.settings.device_id.clone() else {
             self.meter_error = Some(audio::NO_DEVICE.to_string());
@@ -211,27 +212,39 @@ impl LaermampelApp {
         }
     }
 
-    fn sync_agc_params(&self) {
-        use std::sync::atomic::Ordering;
-        let (s, p) = (&self.settings, &self.agc_params);
-        p.gate_enabled.store(s.gate_knob > KNOB_OFF, Ordering::Relaxed);
-        p.gate_threshold_db.set(gate_threshold_db(s.gate_knob));
-        p.gate_range_db.set(s.gate_range_db);
-        p.gate_attack_ms.set(s.gate_attack_ms);
-        p.gate_hold_ms.set(s.gate_hold_ms);
-        p.gate_release_ms.set(s.gate_release_ms);
-        p.agc_enabled.store(s.comp_knob > KNOB_OFF, Ordering::Relaxed);
-        p.max_gain_db.set(comp_range_db(s.comp_knob));
-        p.max_cut_db.set(comp_range_db(s.comp_knob));
-        // Läuft der Audio-Filter, macht er Fader und Mute; sonst würde beides doppelt wirken.
-        let apo_active = self.apo.active();
-        p.fader_db.set(if apo_active { 0.0 } else { s.fader_db });
-        p.muted.store(s.mic_muted && !apo_active, Ordering::Relaxed);
-        p.target_db.set(s.agc_target_db);
-        p.attack_ms.set(s.agc_attack_ms);
-        p.release_ms.set(s.agc_release_ms);
-        p.gate_db.set(s.agc_gate_db);
-        p.ceiling_db.set(s.agc_ceiling_db);
+    /// Einstellungen aus der Oberfläche für die Bearbeitungskette.
+    fn chain_settings(&self) -> ChainSettings {
+        let s = &self.settings;
+        ChainSettings {
+            gate: GateSettings {
+                enabled: s.gate_knob > KNOB_OFF,
+                threshold_db: gate_threshold_db(s.gate_knob),
+                range_db: s.gate_range_db,
+                attack_ms: s.gate_attack_ms,
+                hold_ms: s.gate_hold_ms,
+                release_ms: s.gate_release_ms,
+            },
+            comp: CompSettings {
+                enabled: s.comp_knob > KNOB_OFF,
+                target_db: s.agc_target_db,
+                max_gain_db: comp_range_db(s.comp_knob),
+                max_cut_db: comp_range_db(s.comp_knob),
+                attack_ms: s.agc_attack_ms,
+                release_ms: s.agc_release_ms,
+                pause_db: s.agc_gate_db,
+            },
+            fader_db: s.fader_db,
+            muted: s.mic_muted,
+            ceiling_db: s.agc_ceiling_db,
+        }
+    }
+
+    /// Läuft der Audio-Filter, bearbeitet er das Mikrofon; der VB-Cable-Weg reicht dann nur durch,
+    /// sonst würde alles doppelt wirken.
+    fn sync_chain(&self) {
+        let settings = self.chain_settings();
+        self.apo.send(&settings);
+        self.chain_control.set(if self.apo.active() { ChainSettings::default() } else { settings });
     }
 
     /// Angezeigte Farbe; während der Vorschau immer Rot.
@@ -535,8 +548,6 @@ impl LaermampelApp {
     }
 
     fn strip_ui(&mut self, ui: &mut egui::Ui) {
-        use std::sync::atomic::Ordering;
-
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         let devices = self.devices.clone();
@@ -559,10 +570,15 @@ impl LaermampelApp {
         let mut picked: Option<String> = None;
         let mut refresh_devices = false;
 
-        let p = Arc::clone(&self.agc_params);
         let running = output_name.is_some();
         let voice_db = if self.meter.is_some() { self.level.display_db } else { -120.0 };
-        let gate_open = running && p.gate_open.load(Ordering::Relaxed) && self.settings.gate_knob > KNOB_OFF;
+        // Werte vom Filter, sonst vom VB-Cable-Weg; ohne beides wird gar nicht bearbeitet.
+        let feedback = self.apo.feedback().or_else(|| running.then(|| self.chain_control.feedback()));
+        let gate_open = feedback.is_some_and(|f| f.gate_open) && self.settings.gate_knob > KNOB_OFF;
+        let s = &self.settings;
+        let wants_processing =
+            s.gate_knob > KNOB_OFF || s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.mic_muted || s.agc_ceiling_db < 0.0;
+        let nothing_processes = wants_processing && feedback.is_none();
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
             // Füllt das ganze Fenster aus, drumherum ist es durchsichtig.
@@ -662,7 +678,7 @@ impl LaermampelApp {
                     format!(
                         "Automatische Lautstärke: bis ±{:.0} dB, gerade {:+.1} dB",
                         comp_range_db(s.comp_knob),
-                        p.current_gain_db.get()
+                        feedback.map_or(0.0, |f| f.comp_gain_db)
                     )
                 } else {
                     "Automatische Lautstärke: aus".to_string()
@@ -671,7 +687,7 @@ impl LaermampelApp {
                     format!(
                         "Noise Gate: Schwelle {:.0} dB, Mikrofon gerade {:.0} dB",
                         gate_threshold_db(s.gate_knob),
-                        p.gate_level_db.get()
+                        feedback.map_or(voice_db, |f| f.gate_level_db)
                     )
                 } else {
                     "Noise Gate: aus".to_string()
@@ -681,10 +697,11 @@ impl LaermampelApp {
 
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
-                let (level, peak) = if running { (p.out_level_db.get(), p.out_peak_db.get()) } else { (-120.0, -120.0) };
+                let (level, peak) = feedback.map_or((-120.0, -120.0), |f| (f.out_level_db, f.out_peak_db));
                 // Gelb und Rot nur zeigen, solange der Warnton an ist.
                 let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
-                strip::level_meter(ui, voice_db, level, peak, &mut s.agc_ceiling_db, thresholds, 230.0);
+                let muted = s.mic_muted;
+                strip::level_meter(ui, voice_db, level, peak, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
@@ -704,8 +721,18 @@ impl LaermampelApp {
                 });
             });
 
+            if nothing_processes {
+                let warning = egui::RichText::new("⚠ Wirkt erst mit Filter oder VB-Cable").small().color(RED_TEXT);
+                if ui
+                    .add(egui::Label::new(warning).sense(egui::Sense::click()))
+                    .on_hover_text("Comp., Gate, Fader, Limiter und Mute brauchen den Filter (⚙ → „Ohne VB-Cable“) oder VB-Cable")
+                    .clicked()
+                {
+                    self.general_window_open = true;
+                }
+            }
             // Fehlendes VB-Cable ist kein Fehler, nur kaputte Einstellungen werden gemeldet.
-            if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) && !self.apo.active() {
+            else if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) && !self.apo.active() {
                 let warning = egui::RichText::new("⚠ Ausgabe prüfen").small().color(RED_TEXT);
                 if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text("Öffnet die Einstellungen").clicked() {
                     self.general_window_open = true;
@@ -808,9 +835,8 @@ impl LaermampelApp {
     fn apo_ui(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Ohne VB-Cable (Test)").id_salt("apo").show(ui, |ui| {
             ui.label(
-                "Trägt einen Audio-Filter direkt bei deinem Mikrofon ein. Dann wirken Fader und Mute in \
-                 allen Programmen mit deinem normalen Mikrofon. Noch ein Test: Gate, Comp. und Limiter \
-                 laufen weiter nur über VB-Cable.",
+                "Trägt einen Audio-Filter direkt bei deinem Mikrofon ein. Dann wirken Comp., Gate, Fader, \
+                 Limiter und Mute in allen Programmen mit deinem normalen Mikrofon, ohne VB-Cable.",
             );
 
             let Some(guid) = self.settings.device_id.as_deref().and_then(apo_setup::endpoint_guid) else {
@@ -844,7 +870,15 @@ impl LaermampelApp {
                 ApoJob::Idle => {}
             }
 
-            if installed {
+            if installed && self.apo.outdated() {
+                ui.colored_label(
+                    Color32::from_rgb(245, 190, 20),
+                    "Der eingerichtete Filter ist von einer älteren Version und kann Gate und Comp. noch nicht.",
+                );
+                if ui.button("Filter aktualisieren").clicked() {
+                    self.start_apo_job("Aktualisiere Filter, der Ton ist kurz weg …", format!("--apo install {guid}"));
+                }
+            } else if installed {
                 if self.apo.active() {
                     ui.colored_label(strip::ACCENT, "Eingetragen und aktiv.");
                 } else {
@@ -952,11 +986,13 @@ impl eframe::App for LaermampelApp {
         }
 
         self.apo.tick();
-        self.apo.send(self.settings.fader_db, self.settings.mic_muted);
         let meter_input = self.meter.as_ref().and_then(Meter::take_peak_db);
         // Mit Filter bekommt auch die Lärmampel schon bearbeitetes Audio (z.B. stumm),
         // deshalb misst dann der Filter selbst die echte Lautstärke.
-        let input = if self.apo.active() { self.apo.input_level_db() } else { meter_input };
+        let input = match self.apo.feedback() {
+            Some(feedback) => Some(feedback.input_level_db),
+            None => meter_input,
+        };
         let became_red = self.level.update(input, dt, now, &self.settings);
         if became_red {
             self.red_count += 1;
@@ -965,7 +1001,7 @@ impl eframe::App for LaermampelApp {
             }
         }
 
-        self.sync_agc_params();
+        self.sync_chain();
 
         let actions = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
         for action in actions {

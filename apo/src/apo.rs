@@ -3,6 +3,7 @@
 //! Wichtig: `APOProcess` läuft im Echtzeit-Thread des Audiodienstes. Dort nichts anlegen,
 //! nichts sperren, nicht blockieren. Ein Absturz hier legt den Ton von Windows lahm.
 
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
@@ -17,16 +18,14 @@ use windows::Win32::Media::Audio::Apo::{
 use windows::Win32::System::Com::{CoTaskMemAlloc, IClassFactory, IClassFactory_Impl};
 use windows::core::{BOOL, GUID, HRESULT, IUnknown, Interface, Ref, Result, implement};
 
-use crate::shared::Mapping;
+use crate::dsp::Chain;
+use crate::shared::{Feedback, Mapping};
 
 pub const APO_CLSID: GUID = GUID::from_u128(0x6b2f3c1e_8d4a_4f5b_9c2e_7a1d0e5f3b40);
 pub const APO_CLSID_STRING: &str = "{6B2F3C1E-8D4A-4F5B-9C2E-7A1D0E5F3B40}";
 
 /// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 const FLOAT_FORMAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-
-/// Anteil, um den der Gain pro Frame Richtung Zielwert geht (bei 48 kHz etwa 10 ms), sonst knackt es.
-const GAIN_SMOOTHING: f32 = 0.002;
 
 /// Gemeinsamer Speicher, einmal pro Prozess geöffnet und von allen Filter-Instanzen geteilt.
 /// Absichtlich nie freigegeben: er lebt so lange wie der Audiodienst.
@@ -47,8 +46,8 @@ struct LaermampelApo {
     channels: AtomicU32,
     bytes_per_sample: AtomicU32,
     is_float: AtomicBool,
-    /// Aktueller linearer Gain als f32-Bits, wird Richtung Zielwert geführt.
-    current_gain: AtomicU32,
+    /// Gate, Comp., Fader, Limiter. Angelegt in LockForProcess, benutzt nur im Echtzeit-Thread.
+    chain: UnsafeCell<Option<Chain>>,
 }
 
 impl LaermampelApo {
@@ -57,7 +56,7 @@ impl LaermampelApo {
             channels: AtomicU32::new(1),
             bytes_per_sample: AtomicU32::new(4),
             is_float: AtomicBool::new(false),
-            current_gain: AtomicU32::new(1f32.to_bits()),
+            chain: UnsafeCell::new(None),
         }
     }
 }
@@ -121,6 +120,8 @@ impl IAudioProcessingObjectConfiguration_Impl for LaermampelApo_Impl {
                     self.bytes_per_sample.store(info.dwBytesPerSampleContainer.max(1), Ordering::Relaxed);
                     let float = info.guidFormatType == FLOAT_FORMAT && info.dwBytesPerSampleContainer == 4;
                     self.is_float.store(float, Ordering::Relaxed);
+                    // Windows ruft LockForProcess nie gleichzeitig mit APOProcess auf.
+                    *self.chain.get() = Some(Chain::new(info.fFramesPerSecond.max(8000.0)));
                 }
             }
         }
@@ -164,21 +165,26 @@ impl IAudioProcessingObjectRT_Impl for LaermampelApo_Impl {
                 return;
             }
 
+            let Some(chain) = (*self.chain.get()).as_mut() else { return };
             let samples = std::slice::from_raw_parts_mut(output.pBuffer as *mut f32, frames * channels);
 
             // Pegel vor der Bearbeitung, für die Ampel.
             let power = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
-            params.set_input_level_db(10.0 * power.max(1e-12).log10());
+            let input_level_db = 10.0 * power.max(1e-12).log10();
 
-            let target = if params.muted() { 0.0 } else { 10f32.powf(params.gain_db().clamp(-60.0, 24.0) / 20.0) };
-            let mut gain = f32::from_bits(self.current_gain.load(Ordering::Relaxed));
-            for frame in samples.chunks_mut(channels) {
-                gain += (target - gain) * GAIN_SMOOTHING;
-                for sample in frame {
-                    *sample = (*sample * gain).clamp(-1.0, 1.0);
-                }
+            chain.set(params.settings());
+            for frame in samples.chunks_exact_mut(channels) {
+                chain.process_frame(frame);
             }
-            self.current_gain.store(gain.to_bits(), Ordering::Relaxed);
+
+            params.set_feedback(&Feedback {
+                input_level_db,
+                out_level_db: chain.out_level_db(),
+                out_peak_db: chain.out_peak_db(),
+                gate_open: chain.gate_open(),
+                gate_level_db: chain.gate_level_db(),
+                comp_gain_db: chain.comp_gain_db(),
+            });
         }
     }
 
