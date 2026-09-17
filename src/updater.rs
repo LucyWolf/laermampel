@@ -114,8 +114,20 @@ fn agent() -> ureq::Agent {
 
 /// Neueste Version über die normale Release-Seite: `…/releases/latest` leitet auf `…/tag/vX.Y.Z` um.
 /// Die GitHub-API wäre ohne Anmeldung auf 60 Abfragen pro Stunde begrenzt (dann HTTP 403).
+///
+/// Die Seite selbst liegt bei GitHub im Zwischenspeicher: direkt nach einer neuen Version zeigt
+/// sie noch minutenlang auf die alte. Ein eindeutiger Anhang an der Adresse umgeht das.
 fn fetch_latest() -> Result<Release, String> {
-    let response = agent().get(LATEST_RELEASE_PAGE).call().map_err(describe_http_error)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let url = format!("{LATEST_RELEASE_PAGE}?t={stamp}");
+    let response = agent()
+        .get(&url)
+        .header("Cache-Control", "no-cache")
+        .call()
+        .map_err(describe_http_error)?;
     let page_url = response.get_uri().to_string();
     let tag = page_url
         .rsplit_once("/tag/")
