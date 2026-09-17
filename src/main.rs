@@ -15,6 +15,7 @@ mod instance;
 mod level;
 mod placement;
 mod settings;
+mod spectrum;
 mod strip;
 mod tray;
 mod updater;

@@ -56,6 +56,8 @@ pub struct Settings {
     pub agc_output_id: Option<String>,
     /// Ausgang ausgeschaltet: nichts wird auf ein virtuelles Gerät ausgegeben.
     pub output_off: bool,
+    /// Rauschfilter (RNNoise) im Kanalzug.
+    pub denoise: bool,
     /// Ziel-Sprachpegel in dBFS (RMS).
     pub agc_target_db: f32,
     /// Wie schnell runtergeregelt wird.
@@ -96,6 +98,7 @@ impl Default for Settings {
             gate_release_ms: 150.0,
             agc_output_id: None,
             output_off: false,
+            denoise: false,
             agc_target_db: -20.0,
             agc_attack_ms: 40.0,
             agc_release_ms: 1500.0,
