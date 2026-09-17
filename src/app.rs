@@ -179,6 +179,9 @@ impl LaermampelApp {
             log!("Ausgabe-Auswahl verworfen, kein virtuelles Gerät: {id}");
             app.settings.agc_output_id = None;
         }
+        if let Some(profile) = app.settings.noise_profile.clone() {
+            app.spectrum.load_profile(&profile);
+        }
         app.sync_chain();
         app.restart_meter();
         app.updater.check(ctx);
@@ -712,6 +715,19 @@ impl LaermampelApp {
                 if let Some(err) = &other_error {
                     ui.label(egui::RichText::new(err).small().color(RED_TEXT));
                 }
+
+                // Mikrofon-Empfindlichkeit: derselbe Regler wie in den Windows-Soundeinstellungen.
+                if let Some(current) = self.volume_gate.sensitivity() {
+                    let mut percent = (current * 100.0).round();
+                    let slider = egui::Slider::new(&mut percent, 0.0..=100.0).suffix(" %").show_value(true);
+                    let response = ui.add_sized([170.0, 18.0], slider).on_hover_text(
+                        "Empfindlichkeit des Mikrofons in Windows. Das Gate senkt von hier aus ab, \
+                         deshalb bleibt dein Wert der Ausgangspunkt.",
+                    );
+                    if response.changed() {
+                        self.volume_gate.set_sensitivity(percent / 100.0);
+                    }
+                }
             });
             ui.add_space(6.0);
 
@@ -983,6 +999,7 @@ impl LaermampelApp {
             }
             if self.spectrum.profile_db().is_some() && ui.button("Profil löschen").clicked() {
                 self.spectrum.clear_profile();
+                self.settings.noise_profile = None;
             }
         });
         ui.horizontal(|ui| {
@@ -1228,6 +1245,9 @@ impl eframe::App for LaermampelApp {
 
         let rate = self.meter.as_ref().map_or(48_000.0, |m| m.input_rate as f32);
         self.spectrum.update(self.meter.as_ref().map(|m| &*m.raw), rate);
+        if let Some(profile) = self.spectrum.take_new_profile() {
+            self.settings.noise_profile = Some(profile);
+        }
         self.sync_chain();
 
         let actions = self.tray.as_ref().map(Tray::poll).unwrap_or_default();

@@ -23,6 +23,14 @@ const MIN_STEP_DB: f32 = 0.5;
 const TEST_DIP_DB: f32 = 10.0;
 const TEST_SETTLE: Duration = Duration::from_millis(60);
 const TEST_LENGTH: Duration = Duration::from_millis(260);
+/// Steigt der gemessene Pegel bei geschlossenem Gate um so viel, geht es sofort auf.
+/// Das funktioniert ohne Schätzung, wie stark der Regler absenkt.
+const OPEN_JUMP_DB: f32 = 6.0;
+/// So lange nach dem Zugehen wird der Ruhepegel gemerkt.
+const BASELINE_AFTER: Duration = Duration::from_millis(250);
+/// Ist das Gate so lange zu, wird der Regler kurz geöffnet, um den echten Pegel zu messen.
+const RECHECK_AFTER: Duration = Duration::from_secs(15);
+const RECHECK_LENGTH: Duration = Duration::from_millis(150);
 /// Bis zum ersten Test wird der Regler höchstens so weit gezogen, falls das Gerät viel stärker reagiert.
 const UNTESTED_MAX_DB: f32 = 10.0;
 /// Nur in ruhigen Momenten testen, und nicht zu oft.
@@ -83,6 +91,12 @@ pub struct VolumeGate {
     test: Test,
     last_test: Option<Instant>,
     steady_since: Instant,
+
+    /// Seit wann das Gate zu ist, und der gemessene Ruhepegel danach.
+    closed_since: Option<Instant>,
+    closed_baseline_db: Option<f32>,
+    /// Läuft gerade das kurze Nachsehen mit offenem Regler?
+    recheck_until: Option<Instant>,
 }
 
 impl VolumeGate {
@@ -104,6 +118,9 @@ impl VolumeGate {
             test: Test::Idle,
             last_test: None,
             steady_since: Instant::now(),
+            closed_since: None,
+            closed_baseline_db: None,
+            recheck_until: None,
         };
         gate.restore_leftover();
         gate
@@ -149,10 +166,7 @@ impl VolumeGate {
             self.release();
             self.endpoint_id = endpoint_id;
         }
-        if !gate && !mute {
-            self.release();
-            return real_db;
-        }
+        // Auch ohne Gate und Mute verbunden bleiben: die Empfindlichkeit lässt sich sonst nicht stellen.
         if !self.has_volume() && !self.attach() {
             return real_db;
         }
@@ -162,6 +176,11 @@ impl VolumeGate {
             self.set_mute(mute);
             self.muted = mute;
             self.remember_leftover();
+        }
+
+        if !gate && self.reduction_db > 0.0 {
+            self.reduction_db = 0.0;
+            self.apply_reduction();
         }
 
         // Von Hand verstellter Regler, solange nichts abgesenkt ist: neuer Ausgangswert.
@@ -197,6 +216,44 @@ impl VolumeGate {
             if self.run_test(raw) {
                 // Während des Tests keine Entscheidungen, der Regler steht absichtlich tiefer.
                 return real_db;
+            }
+
+            // Notbremsen gegen ein festhängendes Gate: Sprung im gemessenen Pegel und
+            // regelmäßiges Nachsehen mit offenem Regler.
+            if let Some(until) = self.recheck_until {
+                if Instant::now() < until {
+                    return real_db;
+                }
+                self.recheck_until = None;
+                self.closed_since = None;
+                self.closed_baseline_db = None;
+            } else if self.reduction_db >= MIN_STEP_DB {
+                let since = *self.closed_since.get_or_insert_with(Instant::now);
+                if self.closed_baseline_db.is_none() && since.elapsed() >= BASELINE_AFTER {
+                    self.closed_baseline_db = Some(smoothed_raw);
+                }
+                if let Some(baseline) = self.closed_baseline_db
+                    && smoothed_raw > baseline + OPEN_JUMP_DB
+                {
+                    log!("Gate: Pegel um {:.0} dB gestiegen, geht auf", smoothed_raw - baseline);
+                    self.reduction_db = 0.0;
+                    self.closed_since = None;
+                    self.closed_baseline_db = None;
+                    self.smoothed_db = None;
+                    self.apply_reduction();
+                    return real_db;
+                }
+                if since.elapsed() >= RECHECK_AFTER {
+                    log!("Gate: sieht kurz mit offenem Regler nach, wie laut es wirklich ist");
+                    self.reduction_db = 0.0;
+                    self.smoothed_db = None;
+                    self.apply_reduction();
+                    self.recheck_until = Some(Instant::now() + RECHECK_LENGTH);
+                    return real_db;
+                }
+            } else {
+                self.closed_since = None;
+                self.closed_baseline_db = None;
             }
 
             let mut target = gate_reduction_db(smoothed, params.threshold_db, params.range_db);
@@ -316,6 +373,9 @@ impl VolumeGate {
         self.smoothed_db = None;
         self.smoothed_raw_db = None;
         self.test = Test::Idle;
+        self.closed_since = None;
+        self.closed_baseline_db = None;
+        self.recheck_until = None;
         self.remember_leftover();
     }
 
@@ -376,6 +436,31 @@ impl VolumeGate {
         false
     }
 
+    /// Mikrofon-Empfindlichkeit von Windows, 0 bis 1 (derselbe Regler wie in den Soundeinstellungen).
+    pub fn sensitivity(&self) -> Option<f32> {
+        #[cfg(windows)]
+        return self.volume.as_ref().and_then(win::Volume::get_scalar);
+        #[cfg(not(windows))]
+        None
+    }
+
+    pub fn set_sensitivity(&mut self, value: f32) {
+        #[cfg(windows)]
+        if let Some(volume) = &self.volume {
+            volume.set_scalar(value.clamp(0.0, 1.0));
+            // Der Gate-Ausgangspunkt ist damit neu.
+            if let Some(db) = volume.get_db() {
+                self.original_db = db;
+                self.applied_db = db;
+                self.reduction_db = 0.0;
+                self.smoothed_db = None;
+                self.smoothed_raw_db = None;
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = value;
+    }
+
     fn read_db(&self) -> Option<f32> {
         #[cfg(windows)]
         return self.volume.as_ref().and_then(win::Volume::get_db);
@@ -425,6 +510,16 @@ mod win {
                 let (mut min_db, mut max_db, mut step) = (0f32, 0f32, 0f32);
                 endpoint.GetVolumeRange(&mut min_db, &mut max_db, &mut step).ok()?;
                 Some(Volume { endpoint, min_db })
+            }
+        }
+
+        pub fn get_scalar(&self) -> Option<f32> {
+            unsafe { self.endpoint.GetMasterVolumeLevelScalar().ok() }
+        }
+
+        pub fn set_scalar(&self, value: f32) {
+            unsafe {
+                let _ = self.endpoint.SetMasterVolumeLevelScalar(value, std::ptr::null());
             }
         }
 
