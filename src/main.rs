@@ -5,6 +5,8 @@
 #[macro_use]
 mod log;
 mod agc;
+mod apo_link;
+mod apo_setup;
 mod app;
 mod audio;
 mod autostart;
@@ -24,6 +26,10 @@ use eframe::egui;
 fn main() -> eframe::Result {
     log::init();
     log!("Start v{} {:?}", updater::CURRENT_VERSION, std::env::args().skip(1).collect::<Vec<_>>());
+    // Einrichten des Audio-Filters läuft als eigener Aufruf mit Adminrechten, ganz ohne Fenster.
+    if let Some(code) = apo_setup::handle_command_line() {
+        std::process::exit(code);
+    }
     // Nach einem Update wartet die neue Version, bis die alte beendet ist.
     let after_update = std::env::args().any(|a| a == updater::RESTART_ARG);
     let wait = if after_update { Duration::from_secs(30) } else { Duration::ZERO };

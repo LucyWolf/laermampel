@@ -1,0 +1,23 @@
+[package]
+name = "laermampel-apo"
+version = "0.1.0"
+edition = "2024"
+description = "Audio-Filter (APO) der Lärmampel, den Windows in die Mikrofon-Verarbeitung lädt"
+
+[lib]
+name = "laermampel_apo"
+# cdylib: die DLL für den Windows-Audiodienst. rlib: gemeinsame Teile für die Lärmampel selbst.
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(windows)'.dependencies]
+# Das implement-Makro erzeugt Code, der windows_core direkt anspricht.
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Apo",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+] }
