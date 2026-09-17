@@ -634,6 +634,19 @@ impl LaermampelApp {
             ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
 
             ui.add_space(6.0);
+            ui.label(egui::RichText::new("Ampel und Ton").strong());
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text("Ton-Lautstärke"));
+                if ui.button("Testen").clicked() {
+                    beep::play(s.beep_volume);
+                }
+            });
+            ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"))
+                .on_hover_text("Wie schnell die Ampel auf lautere Stimme reagiert");
+            ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
+            ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
+
+            ui.add_space(6.0);
             ui.label(egui::RichText::new("Comp.").strong());
             ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
             ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
@@ -677,32 +690,7 @@ impl LaermampelApp {
         self.calibration_ui(ui);
         ui.separator();
 
-        let s = &mut self.settings;
-        ui.heading("Schwellen");
-        ui.add(egui::Slider::new(&mut s.yellow_db, BAR_MIN_DB..=BAR_MAX_DB).text("Gelb ab").suffix(" dB"));
-        ui.add(egui::Slider::new(&mut s.red_db, BAR_MIN_DB..=BAR_MAX_DB).text("Rot ab").suffix(" dB"));
-        if s.red_db < s.yellow_db {
-            s.red_db = s.yellow_db;
-        }
-
-        ui.separator();
-        ui.heading("Reaktion");
-        ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
-
-        ui.separator();
-        ui.heading("Ton");
-        ui.checkbox(&mut s.beep_enabled, "Kurzer Ton, wenn es rot wird");
-        ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text("Lautstärke"));
-            if ui.button("Testen").clicked() {
-                beep::play(s.beep_volume);
-            }
-        });
-
         if autostart::SUPPORTED {
-            ui.separator();
             ui.heading("Start");
             let mut enabled = self.autostart_enabled;
             if ui.checkbox(&mut enabled, "Mit Windows starten").changed() {
