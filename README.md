@@ -54,6 +54,17 @@ Einrichten:
 2. In Discord, Spielen, OBS usw. als Mikrofon **„CABLE Output“** auswählen.
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
+
+### Ohne VB-Cable (Test)
+
+Unter Details → „Ohne VB-Cable (Test)“ lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
+so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mit dem normalen Mikrofon.
+
+- Braucht einmal Adminrechte; der Windows-Audiodienst startet dabei neu (Ton ein paar Sekunden weg).
+- Die Originalwerte des Mikrofons werden gesichert, „Filter entfernen“ und die Deinstallation stellen sie wieder her.
+- Noch ein Test: Gate, Comp. und Limiter laufen weiterhin nur über VB-Cable.
+- Nicht jeder Treiber lädt solche Filter; dann zeigt die Lärmampel „Eingetragen, aber Windows nutzt den Filter nicht“.
+- Notfalls von Hand austragen: `laermampel.exe --apo uninstall-all` als Administrator ausführen.
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
 Bei Problemen hilft die Log-Datei `%LOCALAPPDATA%\\LucyWolf\\Laermampel\\data\\laermampel.log`
