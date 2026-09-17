@@ -3,7 +3,7 @@ members = ["apo"]
 
 [package]
 name = "laermampel"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2024"
 
 [dependencies]
