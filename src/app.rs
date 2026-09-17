@@ -616,9 +616,6 @@ impl LaermampelApp {
         if s.comp_knob > KNOB_OFF {
             needs_cable.push("Comp.");
         }
-        if s.fader_db.abs() > 0.05 {
-            needs_cable.push("Fader");
-        }
         if s.agc_ceiling_db < 0.0 {
             needs_cable.push("Limiter");
         }
@@ -716,18 +713,6 @@ impl LaermampelApp {
                     ui.label(egui::RichText::new(err).small().color(RED_TEXT));
                 }
 
-                // Mikrofon-Empfindlichkeit: derselbe Regler wie in den Windows-Soundeinstellungen.
-                if let Some(current) = self.volume_gate.sensitivity() {
-                    let mut percent = (current * 100.0).round();
-                    let slider = egui::Slider::new(&mut percent, 0.0..=100.0).suffix(" %").show_value(true);
-                    let response = ui.add_sized([170.0, 18.0], slider).on_hover_text(
-                        "Empfindlichkeit des Mikrofons in Windows. Das Gate senkt von hier aus ab, \
-                         deshalb bleibt dein Wert der Ausgangspunkt.",
-                    );
-                    if response.changed() {
-                        self.volume_gate.set_sensitivity(percent / 100.0);
-                    }
-                }
             });
             ui.add_space(6.0);
 
@@ -1224,8 +1209,10 @@ impl eframe::App for LaermampelApp {
         // deshalb misst dann der Filter selbst die echte Lautstärke.
         // Bearbeitet weder Filter noch VB-Cable das Mikrofon, macht der Windows-Regler das Gate.
         let chain_running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
+        // Ohne Ausgang machen Gate, Mute und Fader ihre Arbeit über den Windows-Regler.
         let volume_gate_on = gate_on(&self.settings) && !chain_running;
         let volume_mute_on = self.settings.mic_muted && !chain_running;
+        let volume_fader_db = if chain_running { 0.0 } else { self.settings.fader_db };
         let gate_params = GateParams {
             threshold_db: self.settings.gate_threshold_db,
             range_db: self.settings.gate_range_db,
@@ -1234,7 +1221,14 @@ impl eframe::App for LaermampelApp {
             release_ms: self.settings.gate_release_ms,
         };
         let device_id = self.settings.device_id.clone();
-        let input = self.volume_gate.update(device_id.as_deref(), volume_gate_on, volume_mute_on, meter_input, &gate_params);
+        let input = self.volume_gate.update(
+            device_id.as_deref(),
+            volume_gate_on,
+            volume_mute_on,
+            volume_fader_db,
+            meter_input,
+            &gate_params,
+        );
         let became_red = self.level.update(input, dt, now, &self.settings);
         if became_red {
             self.red_count += 1;
