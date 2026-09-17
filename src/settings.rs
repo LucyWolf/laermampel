@@ -54,6 +54,8 @@ pub struct Settings {
     pub gate_hold_ms: f32,
     pub gate_release_ms: f32,
     pub agc_output_id: Option<String>,
+    /// Ausgang ausgeschaltet: nichts wird auf ein virtuelles Gerät ausgegeben.
+    pub output_off: bool,
     /// Ziel-Sprachpegel in dBFS (RMS).
     pub agc_target_db: f32,
     /// Wie schnell runtergeregelt wird.
@@ -93,6 +95,7 @@ impl Default for Settings {
             gate_hold_ms: 250.0,
             gate_release_ms: 150.0,
             agc_output_id: None,
+            output_off: false,
             agc_target_db: -20.0,
             agc_attack_ms: 40.0,
             agc_release_ms: 1500.0,

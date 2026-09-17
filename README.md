@@ -38,6 +38,7 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
+- **Ausgang wählen:** unter der Pegelanzeige auf „Ausgang … ▾“ klicken: Aus, automatisch VB-Cable, oder ein virtuelles Gerät (VB-Cable, Voicemeeter). Kopfhörer und Lautsprecher stehen wegen Rückkopplung nicht zur Wahl.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (−100 bis 0 dB): gleitend wie bei Voicemeeter. Über der Schwelle bleibt alles unverändert, darunter wird pro dB darunter um 3 dB zusätzlich abgesenkt (höchstens um die eingestellte Absenkung). Je höher das Gate, desto niedriger der Pegel; die Anzeige zeigt den Pegel nach dem Gate. Ganz links (−100) ist aus.
   Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows gleitend herunter (gilt für alle Programme). In ruhigen Momenten prüft ein kurzer Test (10 dB für eine Viertelsekunde, höchstens alle 30 s), wie stark das Gerät auf den Regler reagiert. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
