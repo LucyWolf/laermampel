@@ -264,6 +264,13 @@ impl Denoiser {
         }
     }
 
+    /// Halbfertigen und fertigen Block wegwerfen. Sonst käme beim nächsten Einschalten
+    /// zuerst der 10-ms-Block von vorhin heraus.
+    fn reset(&mut self) {
+        self.input.clear();
+        self.ready.clear();
+    }
+
     /// Ein Sample hinein, ein (verzögertes) Sample heraus.
     fn process(&mut self, x: f32) -> f32 {
         self.input.push(x * 32768.0);
@@ -320,6 +327,11 @@ impl Chain {
     pub fn set(&mut self, settings: Settings) {
         if self.configured && settings == self.settings {
             return;
+        }
+        if settings.denoise != self.settings.denoise
+            && let Some(denoiser) = &mut self.denoiser
+        {
+            denoiser.reset();
         }
         self.configured = true;
         self.gate.configure(&settings.gate);

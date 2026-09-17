@@ -87,6 +87,8 @@ pub fn list_input_devices() -> Vec<InputDevice> {
 
 /// So viele letzte Samples stehen fürs Frequenz-Diagramm bereit.
 pub const SAMPLE_RING: usize = 2048;
+/// So viele Samples werden gesammelt, bevor sie in den Ringpuffer wandern.
+const RAW_BLOCK: usize = 256;
 
 /// Ringpuffer mit den letzten Samples, vom Audio-Thread gefüllt, von der Anzeige gelesen.
 pub struct RawSamples {
@@ -100,9 +102,12 @@ impl Default for RawSamples {
 }
 
 impl RawSamples {
-    fn push(&self, x: f32) {
-        if let Ok(mut guard) = self.ring.try_lock() {
-            let (ring, write) = &mut *guard;
+    /// Blockweise schreiben: ein Mutex pro Sample wäre im Audio-Thread reine Last, und bei
+    /// jedem belegten Schloss ginge ein einzelnes Sample verloren (Lücken im Diagramm).
+    fn push_block(&self, samples: &[f32]) {
+        let Ok(mut guard) = self.ring.try_lock() else { return };
+        let (ring, write) = &mut *guard;
+        for &x in samples {
             ring[*write] = x;
             *write = (*write + 1) % SAMPLE_RING;
         }
@@ -286,6 +291,8 @@ struct Processor {
     pending_db: f32,
     shared: Arc<Mutex<Shared>>,
     raw: Arc<RawSamples>,
+    /// Sammelt Samples fürs Frequenz-Diagramm, damit der Ringpuffer blockweise gefüllt wird.
+    raw_block: Vec<f32>,
     /// Rauschfilter, automatische Lautstärke und Ausgabe, falls eingeschaltet.
     chain: Option<VoiceChain>,
 }
@@ -301,6 +308,7 @@ impl Processor {
             pending_db: SILENCE_DB,
             shared,
             raw,
+            raw_block: Vec::with_capacity(RAW_BLOCK),
             chain,
         }
     }
@@ -313,7 +321,11 @@ impl Processor {
     }
 
     fn push(&mut self, x: f32) {
-        self.raw.push(x);
+        self.raw_block.push(x);
+        if self.raw_block.len() == RAW_BLOCK {
+            self.raw.push_block(&self.raw_block);
+            self.raw_block.clear();
+        }
         if let Some(chain) = &mut self.chain {
             chain.push(x);
         }

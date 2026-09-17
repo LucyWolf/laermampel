@@ -273,6 +273,11 @@ impl OutputState {
         if filled > self.max {
             samples.skip(filled - self.target);
         }
+        // Puffer ganz leergelaufen (Aussetzer): von vorne auffüllen, sonst bleibt er am Boden
+        // und es knistert dauerhaft weiter.
+        if self.primed && filled == 0 {
+            self.primed = false;
+        }
         // Erst loslegen, wenn etwas Puffer da ist, sonst knackt es am Anfang.
         if !self.primed {
             if filled < self.target {
@@ -342,6 +347,38 @@ mod tests {
         assert_eq!(underruns, 0, "Aussetzer bei {input_per_block}");
         assert!(max_fill < 4_800, "Puffer {max_fill} Samples bei {input_per_block}");
         }
+    }
+
+    #[test]
+    fn ausgabe_fuellt_sich_nach_aussetzer_neu_auf() {
+        use ringbuf::traits::{Producer, Split};
+
+        let (mut producer, mut consumer) = ringbuf::HeapRb::<f32>::new(48_000).split();
+        let mut state = OutputState::new(48_000, 48_000, DEFAULT_BUFFER_MS);
+        let target = state.target;
+        let mut out = vec![0.0f32; 480];
+
+        // Normal anlaufen: Puffer voll genug, Ausgabe läuft.
+        for _ in 0..target {
+            let _ = producer.try_push(0.5);
+        }
+        state.fill(&mut consumer, &mut out);
+        assert!(out.iter().any(|&s| s != 0.0), "Ausgabe sollte laufen");
+
+        // Aussetzer: es kommt nichts nach, der Puffer läuft leer.
+        while consumer.occupied_len() > 0 {
+            state.fill(&mut consumer, &mut out);
+        }
+        state.fill(&mut consumer, &mut out);
+
+        // Danach kommt wieder etwas, aber noch zu wenig: erst auffüllen, nichts verbrauchen.
+        for _ in 0..target / 2 {
+            let _ = producer.try_push(0.5);
+        }
+        let before = consumer.occupied_len();
+        state.fill(&mut consumer, &mut out);
+        assert_eq!(consumer.occupied_len(), before, "Puffer muss sich erst wieder füllen");
+        assert!(out.iter().all(|&s| s == 0.0), "Solange Stille statt dauerndem Knistern");
     }
 
     #[test]

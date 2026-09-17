@@ -206,6 +206,23 @@ impl VolumeGate {
             self.apply_reduction();
         }
 
+        // Stumm gibt Windows gar nichts mehr heraus, gemessen wird nur noch Stille. Würde das
+        // Gate darauf regeln, stünde der Regler nach dem Aufheben unten und müsste sich erst
+        // wieder hocharbeiten. Also Regler frei lassen und den Pegelverlauf vergessen.
+        if mute {
+            if self.reduction_db > 0.0 {
+                self.reduction_db = 0.0;
+                self.apply_reduction();
+            }
+            self.smoothed_db = None;
+            self.smoothed_raw_db = None;
+            self.closed_since = None;
+            self.closed_baseline_db = None;
+            self.recheck_until = None;
+            self.steady_since = Instant::now();
+            return real_db;
+        }
+
         // Von Hand verstellter Regler, solange die Lärmampel nichts verschiebt: neuer Ausgangswert.
         if self.reduction_db < MIN_STEP_DB
             && !uses_fader
