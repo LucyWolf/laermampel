@@ -18,6 +18,7 @@ use crate::settings::{self, DisplayMode, Settings};
 use crate::strip;
 use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
+use crate::volume_gate::{GateParams, VolumeGate};
 
 /// Anzeigebereich des Pegelbalkens in dBFS.
 const BAR_MIN_DB: f32 = -60.0;
@@ -115,6 +116,8 @@ pub struct LaermampelApp {
     updater: Updater,
 
     apo: ApoLink,
+    /// Gate über den Windows-Regler, wenn weder Filter noch VB-Cable das Mikrofon bearbeiten.
+    volume_gate: VolumeGate,
     #[cfg_attr(not(windows), allow(dead_code))]
     apo_job: Arc<Mutex<ApoJob>>,
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -158,6 +161,7 @@ impl LaermampelApp {
             instance,
             updater: Updater::new(),
             apo: ApoLink::new(),
+            volume_gate: VolumeGate::new(),
             apo_job: Arc::new(Mutex::new(ApoJob::Idle)),
             apo_installed: None,
         };
@@ -487,6 +491,7 @@ impl LaermampelApp {
     /// Der Installer läuft: Platz machen, damit er die Dateien ersetzen kann.
     fn exit_for_update(&mut self) {
         log!("Installer gestartet, beende für das Update");
+        self.volume_gate.release();
         settings::save(&self.settings);
         self.saved = self.settings.clone();
         // Symbol im Infobereich sauber entfernen, sonst bleibt ein Geist-Symbol stehen.
@@ -574,10 +579,25 @@ impl LaermampelApp {
         let voice_db = if self.meter.is_some() { self.level.display_db } else { -120.0 };
         // Werte vom Filter, sonst vom VB-Cable-Weg; ohne beides wird gar nicht bearbeitet.
         let feedback = self.apo.feedback().or_else(|| running.then(|| self.chain_control.feedback()));
-        let gate_open = feedback.is_some_and(|f| f.gate_open) && self.settings.gate_knob > KNOB_OFF;
+        let volume_gating = feedback.is_none() && self.settings.gate_knob > KNOB_OFF;
+        let gate_open = self.settings.gate_knob > KNOB_OFF
+            && match feedback {
+                Some(f) => f.gate_open,
+                None => self.volume_gate.is_open(),
+            };
+        // Anzeige wie beim Mischpult: was nach der Bearbeitung übrig bleibt. Nur bei Mute grau die Stimme.
+        let meter_db = if self.settings.mic_muted {
+            voice_db
+        } else if let Some(f) = feedback {
+            f.out_level_db
+        } else if volume_gating {
+            voice_db - self.volume_gate.attenuation_db()
+        } else {
+            voice_db
+        };
         let s = &self.settings;
-        let wants_processing =
-            s.gate_knob > KNOB_OFF || s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.mic_muted || s.agc_ceiling_db < 0.0;
+        // Das Gate braucht keinen Filter mehr, das macht notfalls der Windows-Regler.
+        let wants_processing = s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.mic_muted || s.agc_ceiling_db < 0.0;
         let nothing_processes = wants_processing && feedback.is_none();
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
@@ -700,7 +720,7 @@ impl LaermampelApp {
                 // Gelb und Rot nur zeigen, solange der Warnton an ist.
                 let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
                 let muted = s.mic_muted;
-                strip::level_meter(ui, voice_db, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
+                strip::level_meter(ui, meter_db, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
@@ -1039,9 +1059,19 @@ impl eframe::App for LaermampelApp {
         let meter_input = self.meter.as_ref().and_then(Meter::take_peak_db);
         // Mit Filter bekommt auch die Lärmampel schon bearbeitetes Audio (z.B. stumm),
         // deshalb misst dann der Filter selbst die echte Lautstärke.
+        // Bearbeitet weder Filter noch VB-Cable das Mikrofon, macht der Windows-Regler das Gate.
+        let chain_running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
+        let volume_gate_on = self.settings.gate_knob > KNOB_OFF && !self.apo.active() && !chain_running;
+        let gate_params = GateParams {
+            threshold_db: gate_threshold_db(self.settings.gate_knob),
+            range_db: self.settings.gate_range_db,
+            hold_ms: self.settings.gate_hold_ms,
+        };
+        let device_id = self.settings.device_id.clone();
+        let real_input = self.volume_gate.update(device_id.as_deref(), volume_gate_on, meter_input, &gate_params);
         let input = match self.apo.feedback() {
             Some(feedback) => Some(feedback.input_level_db),
-            None => meter_input,
+            None => real_input,
         };
         let became_red = self.level.update(input, dt, now, &self.settings);
         if became_red {
@@ -1096,6 +1126,7 @@ impl eframe::App for LaermampelApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.volume_gate.release();
         settings::save(&self.settings);
     }
 }
