@@ -159,14 +159,22 @@ pub fn level_meter(
     let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
     let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
 
-    // Links (Pfeile und Stimm-Balken) den näheren Pfeil greifen, rechts den Limiter.
+    // Am Rand bei den Pfeilen: Gelb oder Rot. In der Anzeige: die nächste Linie, Limiter eingeschlossen.
     let lines_y = thresholds.as_ref().map(|(yellow, red)| (to_y(**yellow), to_y(**red)));
+    let limit_line_y = to_y(*limit_db);
     let line_at = |p: Pos2| {
-        if p.x >= inner.center().x {
-            return Some(MeterLine::Limit);
+        let in_gutter = p.x < gutter.right();
+        let Some((yellow_y, red_y)) = lines_y else {
+            return (!in_gutter).then_some(MeterLine::Limit);
+        };
+        let mut best = (MeterLine::Limit, if in_gutter { f32::MAX } else { (p.y - limit_line_y).abs() });
+        for (line, y) in [(MeterLine::Yellow, yellow_y), (MeterLine::Red, red_y)] {
+            let distance = (p.y - y).abs();
+            if distance < best.1 {
+                best = (line, distance);
+            }
         }
-        let (yellow_y, red_y) = lines_y?;
-        Some(if (p.y - red_y).abs() <= (p.y - yellow_y).abs() { MeterLine::Red } else { MeterLine::Yellow })
+        Some(best.0)
     };
     let drag_id = response.id.with("linie");
     if response.drag_started()
@@ -254,23 +262,10 @@ pub fn level_meter(
         painter.line_segment([pos2(columns[1].left(), y), pos2(columns[1].right(), y)], Stroke::new(2.0, Color32::WHITE));
     }
 
-    // Pfeile für Gelb und Rot am Rand; der gegriffene etwas größer.
-    if let Some((yellow, red)) = thresholds.as_ref() {
-        for (db, color, line) in [(**yellow, YELLOW, MeterLine::Yellow), (**red, RED, MeterLine::Red)] {
-            let y = to_y(db);
-            let size = if active_line == Some(line) { 6.0 } else { 5.0 };
-            let tip = pos2(gutter.right() - 1.0, y);
-            painter.add(Shape::convex_polygon(
-                vec![tip, pos2(tip.x - 2.0 * size, y - size), pos2(tip.x - 2.0 * size, y + size)],
-                color,
-                Stroke::new(1.0, Color32::from_black_alpha(160)),
-            ));
-        }
-    }
-
     let limit_active = *limit_db < LIMIT_OFF_DB;
     if limit_active || active_line == Some(MeterLine::Limit) {
-        let column = columns[1];
+        // Der Limiter liegt über der ganzen Anzeige.
+        let column = inner;
         let y = to_y(*limit_db);
         let line = Color32::from_rgb(225, 205, 70);
         let area = Rect::from_min_max(column.min, pos2(column.right(), y));
@@ -289,11 +284,30 @@ pub fn level_meter(
         }
     }
 
+    // Gelb und Rot: Linie über die ganze Anzeige plus Pfeil am Rand; die gegriffene etwas kräftiger.
+    if let Some((yellow, red)) = thresholds.as_ref() {
+        for (db, color, line) in [(**yellow, YELLOW, MeterLine::Yellow), (**red, RED, MeterLine::Red)] {
+            let y = to_y(db);
+            let grabbed = active_line == Some(line);
+            painter.line_segment(
+                [pos2(inner.left(), y), pos2(inner.right(), y)],
+                Stroke::new(if grabbed { 3.0 } else { 2.0 }, color),
+            );
+            let size = if grabbed { 6.0 } else { 5.0 };
+            let tip = pos2(gutter.right() - 1.0, y);
+            painter.add(Shape::convex_polygon(
+                vec![tip, pos2(tip.x - 2.0 * size, y - size), pos2(tip.x - 2.0 * size, y + size)],
+                color,
+                Stroke::new(1.0, Color32::from_black_alpha(160)),
+            ));
+        }
+    }
+
     let hint = match (active_line, thresholds.as_ref()) {
         (Some(MeterLine::Yellow), Some((yellow, _))) => format!("Gelb ab {:.0} dB · Pfeil ziehen", **yellow),
         (Some(MeterLine::Red), Some((_, red))) => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", **red),
         (Some(MeterLine::Limit), _) => {
-            "Rechts: was rausgeht. Gelbe Linie runterziehen = Limiter, Doppelklick: aus.".to_string()
+            "Limiter: Linie runterziehen, Doppelklick: aus.".to_string()
         }
         _ => String::new(),
     };
