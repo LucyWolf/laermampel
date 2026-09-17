@@ -161,6 +161,8 @@ impl LaermampelApp {
             apo_job: Arc::new(Mutex::new(ApoJob::Idle)),
             leftover_filter: None,
         };
+        // Früher ging der Fader in 0,1-dB-Schritten; ein kaum sichtbarer Rest wie 0,3 dB wird 0.
+        app.settings.fader_db = app.settings.fader_db.round() + 0.0;
         // Alte Auswahl von Kopfhörern oder Lautsprechern als Ausgabe verwerfen (Rückkopplung).
         if let Some(id) = &app.settings.agc_output_id
             && !app.output_devices.iter().any(|d| &d.id == id)
@@ -590,8 +592,18 @@ impl LaermampelApp {
         };
         let s = &self.settings;
         // Gate und Mute gehen notfalls über den Windows-Regler; Comp., Fader und Limiter nur mit VB-Cable.
-        let wants_processing = s.comp_knob > KNOB_OFF || s.fader_db.abs() > 0.05 || s.agc_ceiling_db < 0.0;
-        let nothing_processes = wants_processing && feedback.is_none();
+        // Was davon ohne VB-Cable nicht wirkt, beim Namen nennen.
+        let mut needs_cable = Vec::new();
+        if s.comp_knob > KNOB_OFF {
+            needs_cable.push("Comp.");
+        }
+        if s.fader_db.abs() > 0.05 {
+            needs_cable.push("Fader");
+        }
+        if s.agc_ceiling_db < 0.0 {
+            needs_cable.push("Limiter");
+        }
+        let nothing_processes = !needs_cable.is_empty() && feedback.is_none();
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
             // Füllt das ganze Fenster aus, drumherum ist es durchsichtig.
@@ -739,10 +751,15 @@ impl LaermampelApp {
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)));
 
             if nothing_processes {
-                let warning = egui::RichText::new("⚠ Comp., Fader, Limiter: nur mit VB-Cable").small().color(RED_TEXT);
+                let verb = if needs_cable.len() == 1 { "wirkt" } else { "wirken" };
+                let text = format!("⚠ {} {verb} nur mit VB-Cable", needs_cable.join(", "));
+                let warning = egui::RichText::new(text).small().color(RED_TEXT);
                 if ui
                     .add(egui::Label::new(warning).sense(egui::Sense::click()))
-                    .on_hover_text("Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Öffnet die Einstellungen.")
+                    .on_hover_text(
+                        "Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Zurückstellen: \
+                         Doppelklick auf den Knopf bzw. Fader, Limiter per Doppelklick in der Anzeige.",
+                    )
                     .clicked()
                 {
                     self.general_window_open = true;
