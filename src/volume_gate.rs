@@ -13,6 +13,13 @@ use serde::{Deserialize, Serialize};
 const HYSTERESIS_DB: f32 = 3.0;
 /// So oft wird nachgesehen, ob jemand den Windows-Regler von Hand verstellt hat.
 const RESYNC_INTERVAL: Duration = Duration::from_millis(500);
+/// Nach dem Zugehen erst kurz warten, dann messen, wie stark der Regler wirklich absenkt.
+const CALIBRATION_SETTLE: Duration = Duration::from_millis(80);
+const CALIBRATION_END: Duration = Duration::from_millis(350);
+/// Senkt das Gerät mehr ab als gewollt, wird der Regler um so viel weniger weit heruntergezogen.
+const MAX_BACKOFF_DB: f32 = 60.0;
+/// Glättung des Pegels, aus dem der Wert kurz vor dem Zugehen stammt.
+const SMOOTHING: f32 = 0.2;
 
 pub struct GateParams {
     pub threshold_db: f32,
@@ -44,6 +51,18 @@ pub struct VolumeGate {
     /// Was das Gate zuletzt eingestellt hat.
     applied_db: f32,
     last_resync: Instant,
+
+    /// Geglätteter echter Pegel, solange offen.
+    smoothed_db: Option<f32>,
+    /// Pegel kurz vor dem Zugehen; daran wird die tatsächliche Absenkung gemessen.
+    before_close_db: f32,
+    closed_at: Option<Instant>,
+    calibration_sum: f32,
+    calibration_count: u32,
+    /// Gemessene Absenkung. Viele Headsets senken deutlich stärker ab, als der Regler in dB angibt.
+    measured_attenuation_db: Option<f32>,
+    /// Um so viel wird der Regler weniger weit heruntergezogen, damit die Lärmampel noch hört.
+    backoff_db: f32,
 }
 
 impl VolumeGate {
@@ -57,6 +76,13 @@ impl VolumeGate {
             original_db: 0.0,
             applied_db: 0.0,
             last_resync: Instant::now(),
+            smoothed_db: None,
+            before_close_db: -120.0,
+            closed_at: None,
+            calibration_sum: 0.0,
+            calibration_count: 0,
+            measured_attenuation_db: None,
+            backoff_db: 0.0,
         };
         gate.restore_leftover();
         gate
@@ -66,9 +92,12 @@ impl VolumeGate {
         self.open
     }
 
-    /// Wie viel leiser der Windows-Regler gerade steht als vorher.
+    /// Wie viel leiser das Mikrofon gerade bei der Lärmampel ankommt als ohne Gate.
     pub fn attenuation_db(&self) -> f32 {
-        if self.has_volume() { (self.original_db - self.applied_db).max(0.0) } else { 0.0 }
+        if !self.has_volume() || (self.original_db - self.applied_db).abs() < 0.05 {
+            return 0.0;
+        }
+        self.measured_attenuation_db.unwrap_or(self.original_db - self.applied_db).max(0.0)
     }
 
     fn has_volume(&self) -> bool {
@@ -106,14 +135,28 @@ impl VolumeGate {
             }
         }
 
+        if self.open
+            && let Some(level) = real_db
+        {
+            let previous = self.smoothed_db.unwrap_or(level);
+            self.smoothed_db = Some(previous + (level - previous) * SMOOTHING);
+        }
+        if !self.open {
+            self.calibrate(measured_db, params.range_db);
+        }
+
         if let Some(level) = real_db {
             if level > params.threshold_db {
+                if !self.open {
+                    self.closed_at = None;
+                }
                 self.open = true;
                 self.below_since = None;
             } else if level < params.threshold_db - HYSTERESIS_DB {
                 let since = *self.below_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
+                if self.open && since.elapsed() >= Duration::from_secs_f32(params.hold_ms.max(0.0) / 1000.0) {
                     self.open = false;
+                    self.start_calibration();
                 }
             }
         }
@@ -125,6 +168,48 @@ impl VolumeGate {
             self.remember_leftover(!self.open);
         }
         real_db
+    }
+
+    fn start_calibration(&mut self) {
+        self.before_close_db = self.smoothed_db.unwrap_or(-120.0);
+        self.closed_at = Some(Instant::now());
+        self.calibration_sum = 0.0;
+        self.calibration_count = 0;
+    }
+
+    /// Kurz nach dem Zugehen: wie viel leiser kommt das Mikrofon wirklich an?
+    /// Ist es viel mehr als gewollt, den Regler weniger weit herunterziehen und neu messen.
+    fn calibrate(&mut self, measured_db: Option<f32>, range_db: f32) {
+        let Some(closed_at) = self.closed_at else { return };
+        let elapsed = closed_at.elapsed();
+        if elapsed < CALIBRATION_SETTLE {
+            return;
+        }
+        if elapsed < CALIBRATION_END {
+            if let Some(db) = measured_db {
+                self.calibration_sum += db;
+                self.calibration_count += 1;
+            }
+            return;
+        }
+        self.closed_at = None;
+        if self.calibration_count == 0 {
+            return;
+        }
+        let after_db = self.calibration_sum / self.calibration_count as f32;
+        let attenuation = (self.before_close_db - after_db).clamp(0.0, 90.0);
+        self.measured_attenuation_db = Some(attenuation);
+
+        let wanted = range_db.max(0.0);
+        if attenuation > wanted + 6.0 && self.backoff_db < MAX_BACKOFF_DB {
+            self.backoff_db = (self.backoff_db + (attenuation - wanted) * 0.7).min(MAX_BACKOFF_DB);
+            log!("Gate: Gerät senkt {attenuation:.0} dB statt {wanted:.0} dB ab, Regler {:.0} dB weniger weit runter", self.backoff_db);
+            // Mit dem neuen Wert gleich noch einmal messen.
+            self.closed_at = Some(Instant::now());
+            self.calibration_sum = 0.0;
+            self.calibration_count = 0;
+            self.measured_attenuation_db = None;
+        }
     }
 
     /// Regler zurück auf den ursprünglichen Wert und loslassen.
@@ -188,6 +273,8 @@ impl VolumeGate {
         self.applied_db = current;
         self.volume = Some(volume);
         self.open = true;
+        self.backoff_db = 0.0;
+        self.measured_attenuation_db = None;
         log!("Gate: nutzt den Windows-Regler von {id}, steht auf {current:.1} dB");
         true
     }
@@ -200,9 +287,9 @@ impl VolumeGate {
     fn closed_db(&self, range_db: f32) -> f32 {
         #[cfg(windows)]
         if let Some(volume) = &self.volume {
-            return (self.original_db - range_db.max(0.0)).max(volume.min_db);
+            return (self.original_db - range_db.max(0.0) + self.backoff_db).min(self.original_db).max(volume.min_db);
         }
-        self.original_db - range_db.max(0.0)
+        self.original_db - range_db.max(0.0) + self.backoff_db
     }
 
     fn read_db(&self) -> Option<f32> {

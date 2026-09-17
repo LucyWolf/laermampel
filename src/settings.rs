@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::placement::Anchor;
 
+/// Gate-Knopf ganz links: lässt alles durch.
+pub const GATE_OFF_DB: f32 = -100.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum DisplayMode {
     Dot,
@@ -40,7 +43,8 @@ pub struct Settings {
     pub beep_volume: f32,
 
     /// Kanalzug fürs Mikrofon (über VB-Cable). Knöpfe 0 bis 10, 0 = aus.
-    pub gate_knob: f32,
+    /// Schwelle des Gates in dB, -100 = aus.
+    pub gate_threshold_db: f32,
     pub comp_knob: f32,
     pub fader_db: f32,
     pub mic_muted: bool,
@@ -80,7 +84,7 @@ impl Default for Settings {
             bar_width: 240.0,
             beep_enabled: false,
             beep_volume: 0.3,
-            gate_knob: 0.0,
+            gate_threshold_db: GATE_OFF_DB,
             comp_knob: 0.0,
             fader_db: 0.0,
             mic_muted: false,

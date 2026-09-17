@@ -33,9 +33,8 @@ const REASSERT_INTERVAL: Duration = Duration::from_secs(1);
 
 const PREVIEW_DURATION: Duration = Duration::from_secs(3);
 
-/// Gate-Knopf 1 bis 10 → Schwelle -75 bis -30 dB.
-fn gate_threshold_db(knob: f32) -> f32 {
-    -80.0 + knob * 5.0
+fn gate_on(settings: &Settings) -> bool {
+    settings.gate_threshold_db > settings::GATE_OFF_DB + 0.5
 }
 
 /// Comp-Knopf 1 bis 10 → höchstens 2 bis 20 dB lauter bzw. leiser.
@@ -221,8 +220,8 @@ impl LaermampelApp {
         let s = &self.settings;
         ChainSettings {
             gate: GateSettings {
-                enabled: s.gate_knob > KNOB_OFF,
-                threshold_db: gate_threshold_db(s.gate_knob),
+                enabled: gate_on(s),
+                threshold_db: s.gate_threshold_db,
                 range_db: s.gate_range_db,
                 attack_ms: s.gate_attack_ms,
                 hold_ms: s.gate_hold_ms,
@@ -579,8 +578,8 @@ impl LaermampelApp {
         let voice_db = if self.meter.is_some() { self.level.display_db } else { -120.0 };
         // Werte vom Filter, sonst vom VB-Cable-Weg; ohne beides wird gar nicht bearbeitet.
         let feedback = self.apo.feedback().or_else(|| running.then(|| self.chain_control.feedback()));
-        let volume_gating = feedback.is_none() && self.settings.gate_knob > KNOB_OFF;
-        let gate_open = self.settings.gate_knob > KNOB_OFF
+        let volume_gating = feedback.is_none() && gate_on(&self.settings);
+        let gate_open = gate_on(&self.settings)
             && match feedback {
                 Some(f) => f.gate_open,
                 None => self.volume_gate.is_open(),
@@ -703,24 +702,26 @@ impl LaermampelApp {
                 } else {
                     "Automatische Lautstärke: aus".to_string()
                 });
-                strip::knob(ui, &mut s.gate_knob, 10.0, "Gate", gate_open).on_hover_text(if s.gate_knob > KNOB_OFF {
+                let gate_hover = if gate_on(s) {
                     format!(
                         "Noise Gate: Schwelle {:.0} dB, Mikrofon gerade {:.0} dB",
-                        gate_threshold_db(s.gate_knob),
+                        s.gate_threshold_db,
                         feedback.map_or(voice_db, |f| f.gate_level_db)
                     )
                 } else {
-                    "Noise Gate: aus".to_string()
-                });
+                    "Noise Gate: aus (ganz links)".to_string()
+                };
+                strip::knob_db(ui, &mut s.gate_threshold_db, settings::GATE_OFF_DB, 0.0, "Gate", gate_open).on_hover_text(gate_hover);
             });
             ui.add_space(6.0);
 
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 // Gelb und Rot nur zeigen, solange der Warnton an ist.
+                let gate_line = gate_on(s).then_some(s.gate_threshold_db);
                 let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
                 let muted = s.mic_muted;
-                strip::level_meter(ui, meter_db, muted, &mut s.agc_ceiling_db, thresholds, 230.0);
+                strip::level_meter(ui, meter_db, muted, gate_line, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
@@ -1061,9 +1062,9 @@ impl eframe::App for LaermampelApp {
         // deshalb misst dann der Filter selbst die echte Lautstärke.
         // Bearbeitet weder Filter noch VB-Cable das Mikrofon, macht der Windows-Regler das Gate.
         let chain_running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
-        let volume_gate_on = self.settings.gate_knob > KNOB_OFF && !self.apo.active() && !chain_running;
+        let volume_gate_on = gate_on(&self.settings) && !self.apo.active() && !chain_running;
         let gate_params = GateParams {
-            threshold_db: gate_threshold_db(self.settings.gate_knob),
+            threshold_db: self.settings.gate_threshold_db,
             range_db: self.settings.gate_range_db,
             hold_ms: self.settings.gate_hold_ms,
         };
