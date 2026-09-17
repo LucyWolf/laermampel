@@ -79,6 +79,8 @@ pub struct Settings {
     pub margin: f32,
     pub dot_size: f32,
     pub bar_width: f32,
+    /// Unteres Ende des Pegelbalkens in dBFS.
+    pub bar_min_db: f32,
 
     pub beep_enabled: bool,
     pub beep_volume: f32,
@@ -134,6 +136,7 @@ impl Default for Settings {
             margin: 12.0,
             dot_size: 20.0,
             bar_width: 240.0,
+            bar_min_db: -60.0,
             beep_enabled: false,
             beep_volume: 0.3,
             gate_threshold_db: GATE_OFF_DB,
@@ -188,6 +191,7 @@ impl Settings {
             margin,
             dot_size,
             bar_width,
+            bar_min_db,
             beep_volume,
             gate_threshold_db,
             comp_knob,
