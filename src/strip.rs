@@ -332,19 +332,41 @@ pub fn mute_button(ui: &mut Ui, muted: &mut bool) -> Response {
 
 pub const TITLE_BUTTON_WIDTH: f32 = 24.0;
 
-/// Kleiner Knopf für die eigene Titelzeile. `danger` färbt ihn beim Überfahren rot (Schließen).
-pub fn title_button(ui: &mut Ui, symbol: &str, selected: bool, danger: bool) -> Response {
+#[derive(Clone, Copy, PartialEq)]
+pub enum TitleIcon {
+    Gear,
+    Minimize,
+    Close,
+}
+
+/// Kleiner Knopf für die eigene Titelzeile. Schließen wird beim Überfahren rot.
+/// Minimieren und Schließen werden gezeichnet, nicht als Schriftzeichen: „✕“ fehlt in der Schrift.
+pub fn title_button(ui: &mut Ui, icon: TitleIcon, selected: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(TITLE_BUTTON_WIDTH, 24.0), Sense::click());
     let hovered = response.hovered();
-    let background = match (hovered, danger, selected) {
-        (true, true, _) => Some(Color32::from_rgb(200, 45, 45)),
-        (true, false, _) | (false, _, true) => Some(Color32::from_rgb(70, 76, 88)),
+    let background = match (hovered, icon, selected) {
+        (true, TitleIcon::Close, _) => Some(Color32::from_rgb(200, 45, 45)),
+        (true, _, _) | (false, _, true) => Some(Color32::from_rgb(70, 76, 88)),
         _ => None,
     };
+    let painter = ui.painter();
     if let Some(color) = background {
-        ui.painter().rect_filled(rect, CornerRadius::same(4), color);
+        painter.rect_filled(rect, CornerRadius::same(4), color);
     }
     let color = if hovered || selected { Color32::WHITE } else { LABEL };
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, FontId::proportional(16.0), color);
+    let c = rect.center();
+    let stroke = Stroke::new(1.6, color);
+    match icon {
+        TitleIcon::Gear => {
+            painter.text(c, Align2::CENTER_CENTER, "⚙", FontId::proportional(16.0), color);
+        }
+        TitleIcon::Minimize => {
+            painter.line_segment([pos2(c.x - 5.0, c.y + 1.0), pos2(c.x + 5.0, c.y + 1.0)], stroke);
+        }
+        TitleIcon::Close => {
+            painter.line_segment([pos2(c.x - 4.5, c.y - 4.5), pos2(c.x + 4.5, c.y + 4.5)], stroke);
+            painter.line_segment([pos2(c.x - 4.5, c.y + 4.5), pos2(c.x + 4.5, c.y - 4.5)], stroke);
+        }
+    }
     response
 }
