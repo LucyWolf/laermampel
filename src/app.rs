@@ -556,6 +556,30 @@ impl LaermampelApp {
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
             ui.set_width(200.0);
+
+            // Zahnrad oben rechts im Kanalzug; ein grüner Punkt daneben, wenn ein Update bereitliegt.
+            let corner = ui.max_rect().right_top();
+            let gear_rect = Rect::from_min_size(Pos2::new(corner.x - 26.0, corner.y), egui::vec2(26.0, 26.0));
+            // Ohne Platz zu belegen, sonst rutscht die Überschrift nach unten.
+            let gear = ui.interact(gear_rect, ui.id().with("zahnrad"), egui::Sense::click());
+            let highlighted = self.general_window_open || gear.hovered();
+            if highlighted {
+                ui.painter().rect_filled(gear_rect, CornerRadius::same(4), Color32::from_rgb(70, 76, 88));
+            }
+            ui.painter().text(
+                gear_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "⚙",
+                egui::FontId::proportional(18.0),
+                if highlighted { Color32::WHITE } else { Color32::from_rgb(170, 176, 186) },
+            );
+            if gear.on_hover_text("Einstellungen").clicked() {
+                self.general_window_open = !self.general_window_open;
+            }
+            if matches!(self.updater.status(), Status::Available(_)) {
+                ui.painter().circle_filled(Pos2::new(gear_rect.left() - 6.0, gear_rect.center().y), 4.0, strip::ACCENT);
+            }
+
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
 
@@ -829,18 +853,6 @@ impl LaermampelApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        // Zahnrad oben rechts; ein grüner Punkt daneben, wenn ein Update bereitliegt.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            let mut open = self.general_window_open;
-            let gear = egui::RichText::new("⚙").size(20.0);
-            if ui.add(egui::Button::new(gear).selected(open)).on_hover_text("Einstellungen").clicked() {
-                open = !open;
-            }
-            self.general_window_open = open;
-            if matches!(self.updater.status(), Status::Available(_)) {
-                ui.colored_label(strip::ACCENT, "●").on_hover_text("Update verfügbar");
-            }
-        });
         self.strip_ui(ui);
     }
 
