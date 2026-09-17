@@ -13,6 +13,45 @@ pub enum DisplayMode {
     Bar,
 }
 
+/// Wie stark der Rauschfilter eingreifen darf.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum DenoiseLevel {
+    Leicht,
+    Medium,
+    Stark,
+}
+
+impl DenoiseLevel {
+    pub const ALL: [DenoiseLevel; 3] = [DenoiseLevel::Leicht, DenoiseLevel::Medium, DenoiseLevel::Stark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DenoiseLevel::Leicht => "Leicht",
+            DenoiseLevel::Medium => "Medium",
+            DenoiseLevel::Stark => "Stark",
+        }
+    }
+
+    /// Anteil des ungefilterten Tons, der stehen bleibt. Damit ist gedeckelt, wie viel
+    /// der Filter höchstens wegnehmen darf: 0,32 sind 10 dB, 0,1 sind 20 dB, 0 ist alles.
+    pub fn dry(self) -> f32 {
+        match self {
+            DenoiseLevel::Leicht => 0.32,
+            DenoiseLevel::Medium => 0.10,
+            DenoiseLevel::Stark => 0.0,
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            DenoiseLevel::Leicht => "Höchstens 10 dB leiser. Klingt am natürlichsten, lässt aber Rauschen stehen.",
+            DenoiseLevel::Medium => "Höchstens 20 dB leiser. Guter Mittelweg für Tastatur und Lüfter.",
+            DenoiseLevel::Stark => "Alles, was der Filter für Rauschen hält, kommt weg. In Pausen ganz still, \
+                                    kann bei leiser Stimme etwas abschneiden.",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -29,6 +68,8 @@ pub struct Settings {
     /// 0.0 bis 1.0
     pub brightness: f32,
     pub green_brightness: f32,
+    /// Deckkraft der Anzeige auf dem Bildschirm: 1.0 voll deckend, kleiner = durchsichtiger.
+    pub opacity: f32,
 
     pub display: DisplayMode,
     /// 0 = Hauptbildschirm, danach von links nach rechts.
@@ -58,6 +99,8 @@ pub struct Settings {
     pub output_off: bool,
     /// Rauschfilter (RNNoise) im Kanalzug.
     pub denoise: bool,
+    /// Wie stark der Rauschfilter eingreift.
+    pub denoise_level: DenoiseLevel,
     /// Puffer zwischen Aufnahme und Ausgabe in ms. Kleiner = weniger Verzögerung, mehr Aussetzer-Risiko.
     pub buffer_ms: f32,
     /// Gemessenes Rauschprofil (Pegel je Frequenzband in dB), damit es Neustarts übersteht.
@@ -84,6 +127,7 @@ impl Default for Settings {
             hold_ms: 1500.0,
             brightness: 0.9,
             green_brightness: 0.25,
+            opacity: 1.0,
             display: DisplayMode::Dot,
             monitor: 0,
             anchor: Anchor::TopRight,
@@ -103,6 +147,7 @@ impl Default for Settings {
             agc_output_id: None,
             output_off: false,
             denoise: false,
+            denoise_level: DenoiseLevel::Medium,
             buffer_ms: crate::agc::DEFAULT_BUFFER_MS,
             noise_profile: None,
             agc_target_db: -20.0,
@@ -139,6 +184,7 @@ impl Settings {
             hold_ms,
             brightness,
             green_brightness,
+            opacity,
             margin,
             dot_size,
             bar_width,
