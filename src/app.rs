@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2, ViewportCommand, ViewportId};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, ViewportCommand, ViewportId};
 
 use crate::agc::{self, AgcParams};
 use crate::audio::{self, InputDevice, Meter, VoiceSetup};
@@ -150,7 +150,11 @@ impl LaermampelApp {
             output_id: self.settings.agc_output_id.clone(),
             params: Arc::clone(&self.agc_params),
         });
-        match Meter::start(self.settings.device_id.as_deref(), voice_setup) {
+        let Some(device_id) = self.settings.device_id.clone() else {
+            self.meter_error = Some(audio::NO_DEVICE.to_string());
+            return;
+        };
+        match Meter::start(&device_id, voice_setup) {
             Ok(m) => {
                 let message = format!(
                     "Mikrofon läuft: {} · Ausgabe: {}",
@@ -478,60 +482,31 @@ impl LaermampelApp {
         });
     }
 
-    fn microphone_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Mikrofon");
-        // Auch ohne laufende Aufnahme anzeigen, was ausgewählt ist.
-        let selected = match &self.settings.device_id {
-            None => "Standardgerät".to_string(),
-            Some(id) => self
-                .devices
-                .iter()
-                .find(|d| &d.id == id)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| "Gewähltes Mikrofon (nicht gefunden)".to_string()),
-        };
-        let mut new_device: Option<Option<String>> = None;
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("device").selected_text(selected).width(260.0).show_ui(ui, |ui| {
-                if ui.selectable_label(self.settings.device_id.is_none(), "Standardgerät").clicked() {
-                    new_device = Some(None);
-                }
-                for d in &self.devices {
-                    let active = self.settings.device_id.as_deref() == Some(d.id.as_str());
-                    if ui.selectable_label(active, &d.name).clicked() {
-                        new_device = Some(Some(d.id.clone()));
-                    }
-                }
-            });
-            if ui.button("⟳").on_hover_text("Liste aktualisieren").clicked() {
-                self.devices = audio::list_input_devices();
-            }
-        });
-        if let Some(err) = &self.meter_error {
-            ui.colored_label(RED_TEXT, err);
-        }
-        if let Some(device) = new_device {
-            self.settings.device_id = device;
-            self.restart_meter();
-        }
-
-        // Live-Pegel direkt hier, damit man beim Einstellen sieht, was passiert.
-        ui.add_space(4.0);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
-        self.draw_level_bar(ui.painter(), rect);
-        ui.label(format!("Aktuell: {:.1} dB", self.level.display_db));
-    }
-
     fn strip_ui(&mut self, ui: &mut egui::Ui) {
         use std::sync::atomic::Ordering;
 
         ui.heading("Mikrofon für andere Programme");
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
-        let device_name = match &self.settings.device_id {
-            None => "Standardgerät".to_string(),
-            Some(id) => self.devices.iter().find(|d| &d.id == id).map(|d| d.name.clone()).unwrap_or_default(),
+        let devices = self.devices.clone();
+        let chosen_name = self
+            .settings
+            .device_id
+            .as_ref()
+            .and_then(|id| devices.iter().find(|d| &d.id == id).map(|d| d.name.clone()));
+        let device_problem = match (&self.settings.device_id, &chosen_name) {
+            (None, _) => Some(audio::NO_DEVICE),
+            (Some(_), None) => Some(audio::MISSING_DEVICE),
+            _ => None,
         };
+        // Andere Fehler (Zugriff verweigert, belegt …) zusätzlich unter dem Gerätenamen.
+        let other_error = self
+            .meter_error
+            .clone()
+            .filter(|e| e != audio::NO_DEVICE && e != audio::MISSING_DEVICE && device_problem.is_none());
+        let current_id = self.settings.device_id.clone();
+        let mut picked: Option<String> = None;
+        let mut refresh_devices = false;
 
         let p = Arc::clone(&self.agc_params);
         let running = output_name.is_some();
@@ -542,7 +517,39 @@ impl LaermampelApp {
             ui.set_width(200.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
-                ui.label(egui::RichText::new(device_name).small().weak());
+
+                // Gerätename anklicken öffnet die Auswahl. Fehlt ein Gerät, blinkt es rot.
+                let text = match (device_problem, &chosen_name) {
+                    (Some(problem), _) => {
+                        let blink_on = (ui.input(|i| i.time) * 2.0).fract() < 0.5;
+                        let red = Color32::from_rgb(235, 60, 60);
+                        egui::RichText::new(format!("{problem} ▾"))
+                            .small()
+                            .strong()
+                            .color(if blink_on { red } else { red.gamma_multiply(0.35) })
+                    }
+                    (None, Some(name)) => egui::RichText::new(format!("{name} ▾")).small().weak(),
+                    (None, None) => egui::RichText::new("▾").small(),
+                };
+                let menu = ui.menu_button(text, |ui| {
+                    if devices.is_empty() {
+                        ui.label("Keine Mikrofone gefunden");
+                    }
+                    for d in &devices {
+                        let active = current_id.as_deref() == Some(d.id.as_str());
+                        let label = if agc::is_virtual_device(&d.name) { format!("{} (virtuell)", d.name) } else { d.name.clone() };
+                        if ui.selectable_label(active, label).clicked() {
+                            picked = Some(d.id.clone());
+                            ui.close();
+                        }
+                    }
+                });
+                if menu.response.clicked() {
+                    refresh_devices = true;
+                }
+                if let Some(err) = &other_error {
+                    ui.label(egui::RichText::new(err).small().color(RED_TEXT));
+                }
             });
             ui.add_space(6.0);
 
@@ -591,6 +598,14 @@ impl LaermampelApp {
                 });
             });
         });
+
+        if refresh_devices {
+            self.devices = audio::list_input_devices();
+        }
+        if let Some(id) = picked {
+            self.settings.device_id = Some(id);
+            self.restart_meter();
+        }
 
         if let Some(err) = output_error {
             ui.colored_label(RED_TEXT, err);
@@ -682,8 +697,6 @@ impl LaermampelApp {
         self.version_ui(ui);
         ui.separator();
         self.display_ui(ui);
-        ui.separator();
-        self.microphone_ui(ui);
         ui.separator();
         self.strip_ui(ui);
         ui.separator();

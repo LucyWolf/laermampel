@@ -36,6 +36,7 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 
 Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
+- **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (0–10): unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. 0 = aus, höher = höhere Schwelle. Die Lampe am Knopf zeigt, ob es gerade offen ist.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
