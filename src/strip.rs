@@ -108,7 +108,8 @@ pub fn fader(ui: &mut Ui, value: &mut f32, min: f32, max: f32, height: f32) -> R
 
     let knob_center = pos2(x, to_y(*value));
     painter.circle(knob_center, 18.0, Color32::from_rgb(225, 230, 235), Stroke::new(2.0, ACCENT));
-    let text = if value.abs() < 0.05 { "0dB".to_string() } else { format!("{:.0}dB", *value) };
+    // + 0.0 macht aus -0 eine 0, sonst steht bei -0.3 „-0dB“ da.
+    let text = format!("{:.0}dB", value.round() + 0.0);
     painter.text(knob_center, Align2::CENTER_CENTER, text, FontId::proportional(11.0), Color32::from_rgb(30, 30, 34));
 
     response
@@ -129,9 +130,12 @@ enum MeterLine {
     Limit,
 }
 
+/// Breite des Randes links für die Pfeile. Bleibt immer frei, damit nichts springt.
+const ARROW_GUTTER: f32 = 12.0;
+
 /// Pegelanzeige mit zwei Balken, -60 bis 0 dB.
 /// Links deine Stimme, rechts der Ausgang mit der gelben Limiter-Linie.
-/// Mit `thresholds` (Gelb, Rot) liegen über dem Stimm-Balken zwei greifbare Linien.
+/// Mit `thresholds` (Gelb, Rot) sitzen links am Rand zwei greifbare Pfeile.
 /// Der Limiter ist auf 0 dB aus und erscheint dann nur, wenn die Maus über seinem Balken ist.
 pub fn level_meter(
     ui: &mut Ui,
@@ -142,8 +146,9 @@ pub fn level_meter(
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
 ) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(56.0, height), Sense::click_and_drag());
-    let meter = rect;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(56.0 + ARROW_GUTTER, height), Sense::click_and_drag());
+    let gutter = Rect::from_min_max(rect.min, pos2(rect.left() + ARROW_GUTTER, rect.bottom()));
+    let meter = Rect::from_min_max(pos2(gutter.right(), rect.top()), rect.max);
     let inner = meter.shrink(3.0);
     let gap = 4.0;
     let bar_width = (inner.width() - gap) / 2.0;
@@ -154,7 +159,7 @@ pub fn level_meter(
     let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
     let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
 
-    // Links die nähere der beiden Linien greifen, rechts den Limiter.
+    // Links (Pfeile und Stimm-Balken) den näheren Pfeil greifen, rechts den Limiter.
     let lines_y = thresholds.as_ref().map(|(yellow, red)| (to_y(**yellow), to_y(**red)));
     let line_at = |p: Pos2| {
         if p.x >= inner.center().x {
@@ -249,12 +254,17 @@ pub fn level_meter(
         painter.line_segment([pos2(columns[1].left(), y), pos2(columns[1].right(), y)], Stroke::new(2.0, Color32::WHITE));
     }
 
-    // Linien für Gelb und Rot über dem Stimm-Balken; die gegriffene etwas dicker.
+    // Pfeile für Gelb und Rot am Rand; der gegriffene etwas größer.
     if let Some((yellow, red)) = thresholds.as_ref() {
         for (db, color, line) in [(**yellow, YELLOW, MeterLine::Yellow), (**red, RED, MeterLine::Red)] {
             let y = to_y(db);
-            let width = if active_line == Some(line) { 4.0 } else { 3.0 };
-            painter.line_segment([pos2(columns[0].left(), y), pos2(columns[0].right(), y)], Stroke::new(width, color));
+            let size = if active_line == Some(line) { 6.0 } else { 5.0 };
+            let tip = pos2(gutter.right() - 1.0, y);
+            painter.add(Shape::convex_polygon(
+                vec![tip, pos2(tip.x - 2.0 * size, y - size), pos2(tip.x - 2.0 * size, y + size)],
+                color,
+                Stroke::new(1.0, Color32::from_black_alpha(160)),
+            ));
         }
     }
 
@@ -280,8 +290,8 @@ pub fn level_meter(
     }
 
     let hint = match (active_line, thresholds.as_ref()) {
-        (Some(MeterLine::Yellow), Some((yellow, _))) => format!("Gelb ab {:.0} dB · Linie ziehen", **yellow),
-        (Some(MeterLine::Red), Some((_, red))) => format!("Rot und Warnton ab {:.0} dB · Linie ziehen", **red),
+        (Some(MeterLine::Yellow), Some((yellow, _))) => format!("Gelb ab {:.0} dB · Pfeil ziehen", **yellow),
+        (Some(MeterLine::Red), Some((_, red))) => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", **red),
         (Some(MeterLine::Limit), _) => {
             "Rechts: was rausgeht. Gelbe Linie runterziehen = Limiter, Doppelklick: aus.".to_string()
         }
