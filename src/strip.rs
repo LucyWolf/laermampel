@@ -140,23 +140,16 @@ const ARROW_GUTTER: f32 = 12.0;
 pub fn level_meter(
     ui: &mut Ui,
     voice_db: f32,
-    out_db: f32,
-    out_peak_db: f32,
     muted: bool,
     limit_db: &mut f32,
     thresholds: Option<(&mut f32, &mut f32)>,
     height: f32,
 ) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(56.0 + ARROW_GUTTER, height), Sense::click_and_drag());
+    // Ein Balken: ein Mikrofon ist mono.
+    let (rect, mut response) = ui.allocate_exact_size(vec2(34.0 + ARROW_GUTTER, height), Sense::click_and_drag());
     let gutter = Rect::from_min_max(rect.min, pos2(rect.left() + ARROW_GUTTER, rect.bottom()));
     let meter = Rect::from_min_max(pos2(gutter.right(), rect.top()), rect.max);
     let inner = meter.shrink(3.0);
-    let gap = 4.0;
-    let bar_width = (inner.width() - gap) / 2.0;
-    let columns = [
-        Rect::from_min_size(inner.min, vec2(bar_width, inner.height())),
-        Rect::from_min_size(pos2(inner.left() + bar_width + gap, inner.top()), vec2(bar_width, inner.height())),
-    ];
     let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
     let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
 
@@ -243,10 +236,9 @@ pub fn level_meter(
 
     const SEGMENTS: usize = 40;
     let segment_height = inner.height() / SEGMENTS as f32;
-    // Stumm: alles grau, aber beide Balken zeigen weiter deine Stimme, damit man sieht, dass das
-    // Mikrofon hört. Rausgehen tut ja nichts.
-    let levels = if muted { [voice_db, voice_db] } else { [voice_db, out_db] };
-    for (column, level) in columns.iter().zip(levels) {
+    // Stumm: grau, schlägt aber weiter aus, damit man sieht, dass das Mikrofon hört.
+    {
+        let column = inner;
         for i in 0..SEGMENTS {
             let db = METER_MIN_DB + (i as f32 + 0.5) / SEGMENTS as f32 * -METER_MIN_DB;
             let color = if muted {
@@ -260,12 +252,8 @@ pub fn level_meter(
             };
             let y1 = inner.bottom() - i as f32 * segment_height;
             let segment = Rect::from_min_max(pos2(column.left(), y1 - segment_height + 1.0), pos2(column.right(), y1));
-            painter.rect_filled(segment, CornerRadius::ZERO, if db <= level { color } else { color.gamma_multiply(0.12) });
+            painter.rect_filled(segment, CornerRadius::ZERO, if db <= voice_db { color } else { color.gamma_multiply(0.12) });
         }
-    }
-    if out_peak_db > METER_MIN_DB && !muted {
-        let y = to_y(out_peak_db);
-        painter.line_segment([pos2(columns[1].left(), y), pos2(columns[1].right(), y)], Stroke::new(2.0, Color32::WHITE));
     }
 
     let limit_active = *limit_db < LIMIT_OFF_DB;
@@ -317,7 +305,7 @@ pub fn level_meter(
         }
         _ => String::new(),
     };
-    response.on_hover_text(format!("Stimme {voice_db:.1} dB · Ausgang {out_db:.1} dB\n{hint}"))
+    response.on_hover_text(format!("Stimme {voice_db:.1} dB\n{hint}"))
 }
 
 /// Umschalttaste mit eigener Farbe, wenn aktiv.

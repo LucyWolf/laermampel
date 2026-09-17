@@ -41,13 +41,13 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (0–10): unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. 0 = aus, höher = höhere Schwelle. Die Lampe am Knopf zeigt, ob es gerade offen ist.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
-- **Pegelanzeige:** links deine Stimme, rechts was rausgeht.
+- **Pegelanzeige:** ein Balken mit deiner Stimme (ein Mikrofon ist mono).
   - Ist **Ton** an, gibt es eine **gelbe** und eine **rote** Linie mit Pfeil am Rand für die Ampel-Schwellen, zum Ziehen.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
 - **Mute:** Mikrofon für andere stumm. Die Pegelanzeige wird grau, schlägt aber weiter aus. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
-- Comp., Gate, Fader, Limiter und Mute brauchen den Filter („Ohne VB-Cable“) oder VB-Cable. Ohne beides zeigt der Kanalzug „⚠ Wirkt erst mit Filter oder VB-Cable“.
+- Comp., Gate, Fader, Limiter und Mute brauchen den Filter („Ohne VB-Cable“) oder VB-Cable. Ohne beides zeigt der Kanalzug den Knopf „Filter einrichten“.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:
@@ -57,9 +57,9 @@ Einrichten:
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
-### Ohne VB-Cable (Test)
+### Mikrofon-Filter (ohne VB-Cable)
 
-Unter Zahnrad → „Ohne VB-Cable (Test)“ lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
+Im Kanalzug über „Filter einrichten“ (oder ⚙ → „Mikrofon-Filter“) lässt sich ein Audio-Filter (APO) direkt beim Mikrofon eintragen,
 so wie Equalizer APO es macht. Dann wirken Fader und Mute in allen Programmen mit dem normalen Mikrofon.
 
 - Braucht einmal Adminrechte; der Windows-Audiodienst startet dabei neu (Ton ein paar Sekunden weg).
