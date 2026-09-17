@@ -1,6 +1,9 @@
 // Unter Windows im Release kein Konsolenfenster öffnen.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Zuerst, damit das log!-Makro in allen anderen Modulen verfügbar ist.
+#[macro_use]
+mod log;
 mod agc;
 mod app;
 mod audio;
@@ -19,10 +22,13 @@ use std::time::Duration;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    log::init();
+    log!("Start v{} {:?}", updater::CURRENT_VERSION, std::env::args().skip(1).collect::<Vec<_>>());
     // Nach einem Update wartet die neue Version, bis die alte beendet ist.
     let after_update = std::env::args().any(|a| a == updater::RESTART_ARG);
     let wait = if after_update { Duration::from_secs(30) } else { Duration::ZERO };
     let Some(instance) = instance::acquire(wait) else {
+        log!("Läuft schon, dort Einstellungen angefordert");
         return Ok(());
     };
 
@@ -41,9 +47,14 @@ fn main() -> eframe::Result {
         .with_active(false);
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Lärmampel",
         options,
         Box::new(move |cc| Ok(Box::new(app::LaermampelApp::new(settings, instance, &cc.egui_ctx)))),
-    )
+    );
+    if let Err(e) = &result {
+        log!("Fenster-System beendet mit Fehler: {e}");
+    }
+    log!("Ende");
+    result
 }

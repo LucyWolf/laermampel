@@ -76,7 +76,10 @@ impl Updater {
         self.run(ctx, Status::Checking, || match fetch_latest() {
             Ok(release) if release.version > current_version() => Status::Available(release),
             Ok(_) => Status::UpToDate,
-            Err(e) => Status::Failed(format!("Update-Prüfung fehlgeschlagen: {e}")),
+            Err(e) => {
+                log!("Update-Prüfung fehlgeschlagen: {e}");
+                Status::Failed(format!("Update-Prüfung fehlgeschlagen: {e}"))
+            }
         });
     }
 
@@ -86,7 +89,10 @@ impl Updater {
         }
         self.run(ctx, Status::Installing(release.clone()), move || match download_and_run_setup(&release) {
             Ok(()) => Status::Installed(release),
-            Err(e) => Status::Failed(format!("Update fehlgeschlagen: {e}")),
+            Err(e) => {
+                log!("Update fehlgeschlagen: {e}");
+                Status::Failed(format!("Update fehlgeschlagen: {e}"))
+            }
         });
     }
 
@@ -161,6 +167,7 @@ fn download_and_run_setup(release: &Release) -> Result<(), String> {
 
     // Ohne Rückfragen, aber mit Fortschrittsfenster. Der Installer schließt eine noch laufende
     // Lärmampel selbst und startet am Ende die neue Version.
+    log!("Update auf v{}: starte Installer {}", release.version, setup.display());
     std::process::Command::new(&setup)
         .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
         .spawn()

@@ -91,6 +91,11 @@ pub struct LaermampelApp {
     autostart_error: Option<String>,
 
     tray: Option<Tray>,
+    /// Einmal erzeugt: egui vergleicht Icons nur per Zeiger. Ein neues pro Bild würde
+    /// Windows 60-mal pro Sekunde ein neues Fenster-Icon setzen lassen.
+    icon: Arc<egui::IconData>,
+    settings_window_seen: bool,
+    last_logged_error: Option<String>,
     instance: instance::Guard,
     updater: Updater,
 }
@@ -98,6 +103,7 @@ pub struct LaermampelApp {
 impl LaermampelApp {
     pub fn new(settings: Settings, instance: instance::Guard, ctx: &egui::Context) -> Self {
         let tray = Tray::new();
+        log!("Symbol im Infobereich: {}", if tray.is_some() { "ok" } else { "nicht verfügbar" });
         let mut app = Self {
             saved: settings.clone(),
             settings,
@@ -124,6 +130,9 @@ impl LaermampelApp {
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
             tray,
+            icon: Arc::new(app_icon()),
+            settings_window_seen: false,
+            last_logged_error: None,
             instance,
             updater: Updater::new(),
         };
@@ -143,10 +152,27 @@ impl LaermampelApp {
         });
         match Meter::start(self.settings.device_id.as_deref(), voice_setup) {
             Ok(m) => {
+                let message = format!(
+                    "Mikrofon läuft: {} · Ausgabe: {}",
+                    m.input_name,
+                    m.agc_output_name.clone().or(m.agc_error.clone()).unwrap_or_default()
+                );
+                self.log_once(message);
                 self.meter = Some(m);
                 self.meter_error = None;
             }
-            Err(e) => self.meter_error = Some(e),
+            Err(e) => {
+                self.log_once(format!("Mikrofon-Fehler: {e}"));
+                self.meter_error = Some(e);
+            }
+        }
+    }
+
+    /// Wiederholte gleiche Meldungen (z.B. Neuverbinden alle 2 s) nur einmal ins Log.
+    fn log_once(&mut self, message: String) {
+        if self.last_logged_error.as_ref() != Some(&message) {
+            log!("{message}");
+            self.last_logged_error = Some(message);
         }
     }
 
@@ -195,6 +221,7 @@ impl LaermampelApp {
     }
 
     fn open_settings(&mut self) {
+        log!("Einstellungen angefordert");
         self.settings_open = true;
         self.focus_settings = true;
         self.devices = audio::list_input_devices();
@@ -203,7 +230,9 @@ impl LaermampelApp {
     }
 
     fn close_settings(&mut self, ctx: &egui::Context) {
+        log!("Einstellungen geschlossen");
         self.settings_open = false;
+        self.settings_window_seen = false;
         if self.tray.is_none() {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
@@ -300,11 +329,16 @@ impl LaermampelApp {
         let id = ViewportId::from_hash_of("einstellungen");
         let builder = egui::ViewportBuilder::default()
             .with_title("Lärmampel – Einstellungen")
-            .with_icon(app_icon())
+            .with_icon(Arc::clone(&self.icon))
             .with_inner_size([400.0, 760.0])
             .with_min_inner_size([340.0, 300.0]);
 
-        ctx.show_viewport_immediate(id, builder, |ui, _class| {
+        ctx.show_viewport_immediate(id, builder, |ui, class| {
+            if !self.settings_window_seen {
+                self.settings_window_seen = true;
+                let kind = if matches!(class, egui::ViewportClass::EmbeddedWindow) { "eingebettet" } else { "eigenes Fenster" };
+                log!("Einstellungsfenster gezeichnet ({kind})");
+            }
             egui::Frame::central_panel(ui.style()).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_ui(ui));
             });
@@ -321,7 +355,15 @@ impl LaermampelApp {
 
     fn version_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Version");
-        ui.label(format!("Lärmampel v{}", updater::CURRENT_VERSION));
+        ui.horizontal(|ui| {
+            ui.label(format!("Lärmampel v{}", updater::CURRENT_VERSION));
+            #[cfg(windows)]
+            if let Some(path) = crate::log::path()
+                && ui.small_button("Log-Datei zeigen").clicked()
+            {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+            }
+        });
         let ctx = ui.ctx().clone();
         match self.updater.status() {
             Status::Idle => {
@@ -373,6 +415,7 @@ impl LaermampelApp {
 
     /// Der Installer läuft: Platz machen, damit er die Dateien ersetzen kann.
     fn exit_for_update(&mut self) {
+        log!("Installer gestartet, beende für das Update");
         settings::save(&self.settings);
         self.saved = self.settings.clone();
         // Symbol im Infobereich sauber entfernen, sonst bleibt ein Geist-Symbol stehen.
@@ -683,6 +726,7 @@ impl eframe::App for LaermampelApp {
         self.last_tick = now;
 
         if let Some(fault) = self.meter.as_ref().and_then(Meter::fault) {
+            self.log_once(format!("Audio-Fehler: {fault}"));
             self.meter = None;
             self.meter_error = Some(format!("{fault} Verbinde neu …"));
         }

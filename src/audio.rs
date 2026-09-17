@@ -98,6 +98,7 @@ pub struct Meter {
     _output: Option<cpal::Stream>,
     shared: Arc<Mutex<Shared>>,
     fault: Arc<Fault>,
+    pub input_name: String,
     pub agc_output_name: Option<String>,
     pub agc_error: Option<String>,
 }
@@ -173,6 +174,7 @@ impl Meter {
             _output: output,
             shared,
             fault,
+            input_name: device_name(&device),
             agc_output_name,
             agc_error,
         })
