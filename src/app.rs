@@ -539,7 +539,7 @@ impl LaermampelApp {
         let gate_open = running && p.gate_open.load(Ordering::Relaxed) && self.settings.gate_knob > KNOB_OFF;
 
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
-            ui.set_width(200.0);
+            ui.set_width(190.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
                 ui.label(egui::RichText::new(device_name).small().weak());
@@ -573,21 +573,14 @@ impl LaermampelApp {
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 let (level, peak) = if running { (p.out_level_db.get(), p.out_peak_db.get()) } else { (-120.0, -120.0) };
-                strip::level_meter(
-                    ui,
-                    voice_db,
-                    level,
-                    peak,
-                    &mut s.agc_ceiling_db,
-                    &mut s.yellow_db,
-                    &mut s.red_db,
-                    230.0,
-                );
+                // Gelb und Rot nur zeigen, solange der Warnton an ist.
+                let thresholds = s.beep_enabled.then_some((&mut s.yellow_db, &mut s.red_db));
+                strip::level_meter(ui, voice_db, level, peak, &mut s.agc_ceiling_db, thresholds, 230.0);
                 strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
                 ui.vertical(|ui| {
                     ui.add_space(156.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
-                        .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
+                        .on_hover_text("Warnton, wenn deine Stimme über die rote Linie in der Anzeige kommt")
                         .clicked()
                         && s.beep_enabled
                     {
