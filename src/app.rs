@@ -350,8 +350,10 @@ impl LaermampelApp {
         let builder = egui::ViewportBuilder::default()
             .with_title("Lärmampel – Einstellungen")
             .with_icon(Arc::clone(&self.icon))
-            .with_inner_size([250.0, 450.0])
-            .with_min_inner_size([240.0, 300.0]);
+            .with_inner_size([250.0, 470.0])
+            .with_min_inner_size([240.0, 300.0])
+            // Keine Windows-Titelleiste: Verschieben, Minimieren und Schließen sitzen im Kanalzug.
+            .with_decorations(false);
 
         ctx.show_viewport_immediate(id, builder, |ui, class| {
             if !self.settings_window_seen {
@@ -377,6 +379,8 @@ impl LaermampelApp {
         });
 
         if self.focus_settings {
+            // Falls es über das eigene „–“ minimiert wurde, erst wiederherstellen.
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
             self.focus_settings = false;
         }
@@ -557,27 +561,34 @@ impl LaermampelApp {
         egui::Frame::new().fill(strip::PANEL).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
             ui.set_width(200.0);
 
-            // Zahnrad oben rechts im Kanalzug; ein grüner Punkt daneben, wenn ein Update bereitliegt.
-            let corner = ui.max_rect().right_top();
-            let gear_rect = Rect::from_min_size(Pos2::new(corner.x - 26.0, corner.y), egui::vec2(26.0, 26.0));
-            // Ohne Platz zu belegen, sonst rutscht die Überschrift nach unten.
-            let gear = ui.interact(gear_rect, ui.id().with("zahnrad"), egui::Sense::click());
-            let highlighted = self.general_window_open || gear.hovered();
-            if highlighted {
-                ui.painter().rect_filled(gear_rect, CornerRadius::same(4), Color32::from_rgb(70, 76, 88));
+            // Eigene Titelzeile: links zum Verschieben, rechts Zahnrad, Minimieren, Schließen.
+            let mut minimize = false;
+            let mut close = false;
+            let update_available = matches!(self.updater.status(), Status::Available(_));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let drag_width = ui.available_width() - 3.0 * (strip::TITLE_BUTTON_WIDTH + 2.0);
+                let (drag_rect, drag) = ui.allocate_exact_size(egui::vec2(drag_width, 24.0), egui::Sense::click_and_drag());
+                if drag.drag_started() {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+                }
+                if update_available {
+                    ui.painter().circle_filled(Pos2::new(drag_rect.right() - 6.0, drag_rect.center().y), 4.0, strip::ACCENT);
+                }
+                if strip::title_button(ui, "⚙", self.general_window_open, false)
+                    .on_hover_text(if update_available { "Einstellungen · Update verfügbar" } else { "Einstellungen" })
+                    .clicked()
+                {
+                    self.general_window_open = !self.general_window_open;
+                }
+                minimize = strip::title_button(ui, "–", false, false).on_hover_text("Minimieren").clicked();
+                close = strip::title_button(ui, "✕", false, true).on_hover_text("Schließen").clicked();
+            });
+            if minimize {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
             }
-            ui.painter().text(
-                gear_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "⚙",
-                egui::FontId::proportional(18.0),
-                if highlighted { Color32::WHITE } else { Color32::from_rgb(170, 176, 186) },
-            );
-            if gear.on_hover_text("Einstellungen").clicked() {
-                self.general_window_open = !self.general_window_open;
-            }
-            if matches!(self.updater.status(), Status::Available(_)) {
-                ui.painter().circle_filled(Pos2::new(gear_rect.left() - 6.0, gear_rect.center().y), 4.0, strip::ACCENT);
+            if close {
+                self.close_settings(ui.ctx());
             }
 
             ui.vertical_centered(|ui| {

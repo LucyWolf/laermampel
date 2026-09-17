@@ -329,3 +329,22 @@ pub fn toggle_button(ui: &mut Ui, on: &mut bool, text: &str, active: Color32) ->
 pub fn mute_button(ui: &mut Ui, muted: &mut bool) -> Response {
     toggle_button(ui, muted, "Mute", Color32::from_rgb(200, 45, 45))
 }
+
+pub const TITLE_BUTTON_WIDTH: f32 = 24.0;
+
+/// Kleiner Knopf für die eigene Titelzeile. `danger` färbt ihn beim Überfahren rot (Schließen).
+pub fn title_button(ui: &mut Ui, symbol: &str, selected: bool, danger: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(TITLE_BUTTON_WIDTH, 24.0), Sense::click());
+    let hovered = response.hovered();
+    let background = match (hovered, danger, selected) {
+        (true, true, _) => Some(Color32::from_rgb(200, 45, 45)),
+        (true, false, _) | (false, _, true) => Some(Color32::from_rgb(70, 76, 88)),
+        _ => None,
+    };
+    if let Some(color) = background {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), color);
+    }
+    let color = if hovered || selected { Color32::WHITE } else { LABEL };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, FontId::proportional(16.0), color);
+    response
+}
