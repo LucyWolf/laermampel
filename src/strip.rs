@@ -258,7 +258,8 @@ pub fn level_meter(
     painter.rect_filled(meter, CornerRadius::same(3), TRACK);
 
     // dB-Skala rechts neben dem Balken.
-    for db in [0.0, -10.0, -20.0, -30.0, -40.0, -60.0, -80.0, -100.0] {
+    for step in 0..=10 {
+        let db = step as f32 * -10.0;
         let y = to_y(db);
         painter.line_segment([pos2(scale.left() + 1.0, y), pos2(scale.left() + 4.0, y)], Stroke::new(1.0, LABEL));
         painter.text(pos2(scale.left() + 6.0, y), Align2::LEFT_CENTER, format!("{db:.0}"), FontId::proportional(9.0), LABEL);
