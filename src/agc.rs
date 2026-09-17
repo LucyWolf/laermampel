@@ -12,6 +12,8 @@ use ringbuf::{HeapCons, HeapProd};
 use crate::audio::{Fault, InputDevice, describe};
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
+/// Meldung, wenn gar kein VB-Cable da ist. Das ist kein Fehler, nur nicht eingerichtet.
+pub const VB_CABLE_MISSING: &str = "VB-Cable ist nicht installiert.";
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
 const VB_CABLE_HINT: &str = "cable input";
 
@@ -89,6 +91,7 @@ pub fn is_virtual_device(name: &str) -> bool {
     ["vb-audio", "cable", "voicemeeter", "virtual"].iter().any(|hint| name.contains(hint))
 }
 
+/// Nur virtuelle Geräte: auf Kopfhörer oder Lautsprecher würde das Mikrofon zurückgespielt.
 pub fn list_output_devices() -> Vec<InputDevice> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
@@ -100,6 +103,7 @@ pub fn list_output_devices() -> Vec<InputDevice> {
             let name = d.description().map(|desc| desc.name().to_string()).unwrap_or_else(|_| id.clone());
             Some(InputDevice { id, name })
         })
+        .filter(|d| is_virtual_device(&d.name))
         .collect()
 }
 
@@ -369,17 +373,18 @@ pub fn start_output(
     fault: Arc<Fault>,
 ) -> Result<(cpal::Stream, String), String> {
     let host = cpal::default_host();
-    let device = match device_id.and_then(|s| s.parse::<cpal::DeviceId>().ok()) {
-        Some(id) => host.device_by_id(&id),
-        None => host.output_devices().ok().and_then(|mut devices| {
-            devices.find(|d| {
-                d.description()
-                    .map(|desc| desc.name().to_lowercase().contains(VB_CABLE_HINT))
-                    .unwrap_or(false)
+    // Ein gewähltes Gerät nur nehmen, wenn es da und virtuell ist; sonst VB-Cable suchen.
+    let chosen = device_id
+        .and_then(|s| s.parse::<cpal::DeviceId>().ok())
+        .and_then(|id| host.device_by_id(&id))
+        .filter(|d| d.description().is_ok_and(|desc| is_virtual_device(desc.name())));
+    let device = chosen
+        .or_else(|| {
+            host.output_devices().ok().and_then(|mut devices| {
+                devices.find(|d| d.description().is_ok_and(|desc| desc.name().to_lowercase().contains(VB_CABLE_HINT)))
             })
-        }),
-    }
-    .ok_or_else(|| "VB-Cable nicht gefunden. Bitte installieren oder ein Ausgabegerät wählen.".to_string())?;
+        })
+        .ok_or_else(|| VB_CABLE_MISSING.to_string())?;
 
     let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Ausgabe".to_string());
     // Auf Kopfhörer oder Lautsprecher würde das Mikrofon direkt zurückgespielt.

@@ -24,10 +24,12 @@ Deinstallieren über Windows-Einstellungen → Apps → Lärmampel.
 
 ## Bedienung
 
-- **Einstellungen:** Klick auf das Ampel-Symbol im Infobereich (neben der Uhr) oder Rechtsklick → Einstellungen.
-  Die Lärmampel nochmal starten öffnet ebenfalls die Einstellungen.
-- **Beenden:** Rechtsklick auf das Symbol → Beenden.
-- **Updates:** Das Programm sucht beim Start nach einer neuen Version (grüner Punkt am Zahnrad). Zahnrad oben rechts → „Update installieren“:
+- **Fenster öffnen:** Klick auf das Ampel-Symbol im Infobereich (neben der Uhr), Rechtsklick → Einstellungen,
+  oder die Lärmampel nochmal starten.
+- **Fenster:** Titelzeile zum Verschieben, rechts ⚙ (Einstellungen), – (minimieren), X (schließen; läuft im Infobereich weiter).
+- **Anzeige:** Knopf im Kanalzug → Punkt oder Leiste, Monitor, Position, Größe, Helligkeit.
+- **Beenden:** Rechtsklick auf das Symbol → Beenden, oder ⚙ → „Lärmampel beenden“.
+- **Updates:** Beim Start wird nach einer neuen Version gesucht (grüner Punkt am Zahnrad). ⚙ → „Update installieren“:
   der Installer läuft ohne Rückfragen durch und startet die Lärmampel danach neu.
 - Im Spiel „randloses Fenster“ verwenden, im exklusiven Vollbild wird die Anzeige verdeckt (dann hilft der Warnton).
 
