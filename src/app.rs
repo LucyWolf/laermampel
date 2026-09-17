@@ -99,6 +99,8 @@ pub struct LaermampelApp {
     preview_until: Option<Instant>,
     /// Kleines Fenster mit den Anzeige-Einstellungen, geöffnet über den Knopf im Kanalzug.
     display_window_open: bool,
+    /// Allgemeine Einstellungen (Version, Autostart, Beenden) hinter dem Zahnrad oben rechts.
+    general_window_open: bool,
     autostart_enabled: bool,
     autostart_error: Option<String>,
 
@@ -145,6 +147,7 @@ impl LaermampelApp {
             focus_settings: false,
             preview_until: None,
             display_window_open: false,
+            general_window_open: false,
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
             tray,
@@ -368,6 +371,15 @@ impl LaermampelApp {
                 .default_width(320.0)
                 .show(ui.ctx(), |ui| self.display_ui(ui));
             self.display_window_open = open;
+
+            let mut open = self.general_window_open;
+            egui::Window::new("Einstellungen")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(300.0)
+                .show(ui.ctx(), |ui| self.general_ui(ui));
+            self.general_window_open = open;
             if ui.input(|i| i.viewport().close_requested()) {
                 self.close_settings(ui.ctx());
             }
@@ -797,13 +809,26 @@ impl LaermampelApp {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        self.version_ui(ui);
-        ui.separator();
+        // Zahnrad oben rechts; ein grüner Punkt daneben, wenn ein Update bereitliegt.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let mut open = self.general_window_open;
+            let gear = egui::RichText::new("⚙").size(20.0);
+            if ui.add(egui::Button::new(gear).selected(open)).on_hover_text("Einstellungen").clicked() {
+                open = !open;
+            }
+            self.general_window_open = open;
+            if matches!(self.updater.status(), Status::Available(_)) {
+                ui.colored_label(strip::ACCENT, "●").on_hover_text("Update verfügbar");
+            }
+        });
         self.strip_ui(ui);
-        ui.separator();
+    }
+
+    fn general_ui(&mut self, ui: &mut egui::Ui) {
+        self.version_ui(ui);
 
         if autostart::SUPPORTED {
-            ui.heading("Start");
+            ui.separator();
             let mut enabled = self.autostart_enabled;
             if ui.checkbox(&mut enabled, "Mit Windows starten").changed() {
                 match autostart::set_enabled(enabled) {
