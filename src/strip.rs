@@ -119,27 +119,107 @@ pub const LIMIT_MIN_DB: f32 = -40.0;
 /// 0 dB = Limiter aus (nur die harte Grenze des Formats).
 pub const LIMIT_OFF_DB: f32 = 0.0;
 
-/// Senkrechte Pegelanzeige aus Segmenten, -60 bis 0 dB, mit Spitzenwert und greifbarem Limiter.
-/// Die Limiter-Linie wird mit der Maus verschoben, Doppelklick schaltet ihn aus.
-/// Ist er aus, erscheint er erst, wenn die Maus über der Anzeige ist.
-pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32, height: f32) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(44.0, height), Sense::click_and_drag());
-    let inner = rect.shrink(3.0);
-    let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
+const RED: Color32 = Color32::from_rgb(235, 45, 45);
+const YELLOW: Color32 = Color32::from_rgb(245, 190, 20);
 
-    let mut new = *limit_db;
-    if response.dragged()
+#[derive(Clone, Copy, PartialEq)]
+enum MeterLine {
+    Yellow,
+    Red,
+    Limit,
+}
+
+/// Breite des Randes links für die Pfeile.
+const ARROW_GUTTER: f32 = 12.0;
+
+/// Pegelanzeige mit zwei Balken, -60 bis 0 dB.
+/// Links deine Stimme mit Pfeilen für die Ampel-Schwellen Gelb und Rot,
+/// rechts der Ausgang mit der gelben Limiter-Linie. Pfeile und Linie lassen sich ziehen.
+/// Der Limiter ist auf 0 dB aus und erscheint dann nur, wenn die Maus über seinem Balken ist.
+pub fn level_meter(
+    ui: &mut Ui,
+    voice_db: f32,
+    out_db: f32,
+    out_peak_db: f32,
+    limit_db: &mut f32,
+    yellow_db: &mut f32,
+    red_db: &mut f32,
+    height: f32,
+) -> Response {
+    let (rect, mut response) = ui.allocate_exact_size(vec2(56.0 + ARROW_GUTTER, height), Sense::click_and_drag());
+    let gutter = Rect::from_min_max(rect.min, pos2(rect.left() + ARROW_GUTTER, rect.bottom()));
+    let meter = Rect::from_min_max(pos2(gutter.right(), rect.top()), rect.max);
+    let inner = meter.shrink(3.0);
+    let gap = 4.0;
+    let bar_width = (inner.width() - gap) / 2.0;
+    let columns = [
+        Rect::from_min_size(inner.min, vec2(bar_width, inner.height())),
+        Rect::from_min_size(pos2(inner.left() + bar_width + gap, inner.top()), vec2(bar_width, inner.height())),
+    ];
+    let to_y = |db: f32| inner.bottom() - ((db - METER_MIN_DB) / -METER_MIN_DB).clamp(0.0, 1.0) * inner.height();
+    let to_db = |y: f32| METER_MIN_DB + (inner.bottom() - y) / inner.height() * -METER_MIN_DB;
+
+    // Links (Pfeile und Stimm-Balken) den näheren Pfeil greifen, rechts den Limiter.
+    let (yellow_y, red_y) = (to_y(*yellow_db), to_y(*red_db));
+    let line_at = |p: Pos2| {
+        if p.x < inner.center().x {
+            if (p.y - red_y).abs() <= (p.y - yellow_y).abs() { MeterLine::Red } else { MeterLine::Yellow }
+        } else {
+            MeterLine::Limit
+        }
+    };
+    let drag_id = response.id.with("linie");
+    if response.drag_started()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        new = METER_MIN_DB + (inner.bottom() - pos.y) / inner.height() * -METER_MIN_DB;
+        let code: u8 = match line_at(pos) {
+            MeterLine::Yellow => 0,
+            MeterLine::Red => 1,
+            MeterLine::Limit => 2,
+        };
+        ui.data_mut(|d| d.insert_temp(drag_id, code));
     }
-    if response.double_clicked() {
-        new = LIMIT_OFF_DB;
+    let active_line = if response.dragged() {
+        match ui.data(|d| d.get_temp::<u8>(drag_id)).unwrap_or(2) {
+            0 => Some(MeterLine::Yellow),
+            1 => Some(MeterLine::Red),
+            _ => Some(MeterLine::Limit),
+        }
+    } else {
+        response.hover_pos().map(line_at)
+    };
+
+    let pointer_db = response.interact_pointer_pos().filter(|_| response.dragged()).map(|p| to_db(p.y));
+    let mut changed = false;
+    match active_line {
+        Some(MeterLine::Limit) => {
+            let mut new = pointer_db.unwrap_or(*limit_db);
+            if response.double_clicked() {
+                new = LIMIT_OFF_DB;
+            }
+            // + 0.0 macht aus -0 eine 0, sonst steht „-0“ da.
+            let new = new.round().clamp(LIMIT_MIN_DB, LIMIT_OFF_DB) + 0.0;
+            changed |= new != *limit_db;
+            *limit_db = new;
+        }
+        Some(MeterLine::Yellow) => {
+            if let Some(db) = pointer_db {
+                // Gelb bleibt unter Rot.
+                let new = db.round().clamp(METER_MIN_DB, *red_db) + 0.0;
+                changed |= new != *yellow_db;
+                *yellow_db = new;
+            }
+        }
+        Some(MeterLine::Red) => {
+            if let Some(db) = pointer_db {
+                let new = db.round().clamp(*yellow_db, 0.0) + 0.0;
+                changed |= new != *red_db;
+                *red_db = new;
+            }
+        }
+        None => {}
     }
-    // + 0.0 macht aus -0 eine 0, sonst steht „-0“ da.
-    let new = new.round().clamp(LIMIT_MIN_DB, LIMIT_OFF_DB) + 0.0;
-    if new != *limit_db {
-        *limit_db = new;
+    if changed {
         response.mark_changed();
     }
     if response.hovered() || response.dragged() {
@@ -147,69 +227,85 @@ pub fn level_meter(ui: &mut Ui, level_db: f32, peak_db: f32, limit_db: &mut f32,
     }
 
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(3), TRACK);
+    painter.rect_filled(meter, CornerRadius::same(3), TRACK);
 
-    // Zwei Balken nebeneinander wie beim Mischpult.
     const SEGMENTS: usize = 40;
-    let gap = 3.0;
-    let bar_width = (inner.width() - gap) / 2.0;
     let segment_height = inner.height() / SEGMENTS as f32;
-    for i in 0..SEGMENTS {
-        let db = METER_MIN_DB + (i as f32 + 0.5) / SEGMENTS as f32 * -METER_MIN_DB;
-        let color = if db > -3.0 {
-            Color32::from_rgb(235, 45, 45)
-        } else if db > -12.0 {
-            Color32::from_rgb(245, 190, 20)
+    for (column, level) in columns.iter().zip([voice_db, out_db]) {
+        for i in 0..SEGMENTS {
+            let db = METER_MIN_DB + (i as f32 + 0.5) / SEGMENTS as f32 * -METER_MIN_DB;
+            let color = if db > -3.0 {
+                RED
+            } else if db > -12.0 {
+                YELLOW
+            } else {
+                ACCENT
+            };
+            let y1 = inner.bottom() - i as f32 * segment_height;
+            let segment = Rect::from_min_max(pos2(column.left(), y1 - segment_height + 1.0), pos2(column.right(), y1));
+            painter.rect_filled(segment, CornerRadius::ZERO, if db <= level { color } else { color.gamma_multiply(0.12) });
+        }
+    }
+    if out_peak_db > METER_MIN_DB {
+        let y = to_y(out_peak_db);
+        painter.line_segment([pos2(columns[1].left(), y), pos2(columns[1].right(), y)], Stroke::new(2.0, Color32::WHITE));
+    }
+
+    // Pfeile für Gelb und Rot, mit dünner Linie über den Stimm-Balken.
+    for (db, color, line) in [(*yellow_db, YELLOW, MeterLine::Yellow), (*red_db, RED, MeterLine::Red)] {
+        let y = to_y(db);
+        let size = if active_line == Some(line) { 6.0 } else { 5.0 };
+        let tip = pos2(gutter.right() - 1.0, y);
+        painter.add(Shape::convex_polygon(
+            vec![tip, pos2(tip.x - 2.0 * size, y - size), pos2(tip.x - 2.0 * size, y + size)],
+            color,
+            Stroke::new(1.0, Color32::from_black_alpha(160)),
+        ));
+        painter.line_segment([pos2(columns[0].left(), y), pos2(columns[0].right(), y)], Stroke::new(1.5, color));
+    }
+
+    let limit_active = *limit_db < LIMIT_OFF_DB;
+    if limit_active || active_line == Some(MeterLine::Limit) {
+        let column = columns[1];
+        let y = to_y(*limit_db);
+        let line = Color32::from_rgb(225, 205, 70);
+        let area = Rect::from_min_max(column.min, pos2(column.right(), y));
+        painter.rect_filled(area, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(90, 80, 10, 225));
+        painter.line_segment([pos2(column.left(), y), pos2(column.right(), y)], Stroke::new(2.0, line));
+        let value = if limit_active { format!("{:.0}", *limit_db) } else { "aus".to_string() };
+        let label = format!("Lim\n{value}");
+        let font = FontId::proportional(11.0);
+        if area.height() >= 30.0 {
+            painter.text(pos2(column.center().x, y - 3.0), Align2::CENTER_BOTTOM, label, font, line);
         } else {
-            ACCENT
-        };
-        let lit = db <= level_db;
-        let y1 = inner.bottom() - i as f32 * segment_height;
-        for column in 0..2 {
-            let x0 = inner.left() + column as f32 * (bar_width + gap);
-            let segment = Rect::from_min_max(pos2(x0, y1 - segment_height + 1.0), pos2(x0 + bar_width, y1));
-            painter.rect_filled(segment, CornerRadius::ZERO, if lit { color } else { color.gamma_multiply(0.12) });
+            // Zu wenig Platz über der Linie: Beschriftung darunter mit dunklem Hintergrund.
+            let text_rect = Rect::from_min_size(pos2(column.left(), y + 2.0), vec2(column.width(), 28.0));
+            painter.rect_filled(text_rect, CornerRadius::same(2), Color32::from_black_alpha(200));
+            painter.text(pos2(column.center().x, y + 3.0), Align2::CENTER_TOP, label, font, line);
         }
     }
 
-    if peak_db > METER_MIN_DB {
-        let y = to_y(peak_db);
-        painter.line_segment([pos2(inner.left(), y), pos2(inner.right(), y)], Stroke::new(2.0, Color32::WHITE));
-    }
+    let hint = match active_line {
+        Some(MeterLine::Yellow) => format!("Gelb ab {:.0} dB · Pfeil ziehen", *yellow_db),
+        Some(MeterLine::Red) => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", *red_db),
+        Some(MeterLine::Limit) => "Rechts: was rausgeht. Gelbe Linie runterziehen = Limiter, Doppelklick: aus.".to_string(),
+        None => String::new(),
+    };
+    response.on_hover_text(format!("Stimme {voice_db:.1} dB · Ausgang {out_db:.1} dB\n{hint}"))
+}
 
-    // Limiter: alles oberhalb der Linie wird nicht durchgelassen.
-    let limit_active = *limit_db < LIMIT_OFF_DB;
-    if !limit_active && !response.hovered() && !response.dragged() {
-        return response.on_hover_text(format!("Pegel {level_db:.1} dB"));
+/// Umschalttaste mit eigener Farbe, wenn aktiv.
+pub fn toggle_button(ui: &mut Ui, on: &mut bool, text: &str, active: Color32) -> Response {
+    let fill = if *on { active } else { Color32::from_rgb(58, 63, 72) };
+    let label = egui::RichText::new(text).color(Color32::WHITE).strong();
+    let response = ui.add_sized(Vec2::new(56.0, 26.0), egui::Button::new(label).fill(fill));
+    if response.clicked() {
+        *on = !*on;
     }
-    let limit_y = to_y(*limit_db);
-    let limit_color = Color32::from_rgb(225, 205, 70);
-    let area = Rect::from_min_max(inner.min, pos2(inner.right(), limit_y));
-    painter.rect_filled(area, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(90, 80, 10, 225));
-    painter.line_segment([pos2(inner.left(), limit_y), pos2(inner.right(), limit_y)], Stroke::new(2.0, limit_color));
-
-    let label = if limit_active { format!("Lim\n{:.0}", *limit_db) } else { "Lim\naus".to_string() };
-    let font = FontId::proportional(12.0);
-    if area.height() >= 32.0 {
-        painter.text(pos2(inner.center().x, limit_y - 3.0), Align2::CENTER_BOTTOM, label, font, limit_color);
-    } else {
-        // Zu wenig Platz über der Linie: Beschriftung darunter mit dunklem Hintergrund.
-        let text_rect = Rect::from_min_size(pos2(inner.left(), limit_y + 2.0), vec2(inner.width(), 30.0));
-        painter.rect_filled(text_rect, CornerRadius::same(2), Color32::from_black_alpha(200));
-        painter.text(pos2(inner.center().x, limit_y + 3.0), Align2::CENTER_TOP, label, font, limit_color);
-    }
-
-    let limit_text = if limit_active { format!("{:.0} dB", *limit_db) } else { "aus".to_string() };
-    response.on_hover_text(format!("Pegel {level_db:.1} dB · Limiter {limit_text} (runterziehen zum Einschalten, Doppelklick: aus)"))
+    response
 }
 
 /// Mute-Taste, rot wenn aktiv.
 pub fn mute_button(ui: &mut Ui, muted: &mut bool) -> Response {
-    let fill = if *muted { Color32::from_rgb(200, 45, 45) } else { Color32::from_rgb(58, 63, 72) };
-    let text = egui::RichText::new("Mute").color(Color32::WHITE).strong();
-    let response = ui.add_sized(Vec2::new(56.0, 26.0), egui::Button::new(text).fill(fill));
-    if response.clicked() {
-        *muted = !*muted;
-    }
-    response
+    toggle_button(ui, muted, "Mute", Color32::from_rgb(200, 45, 45))
 }
