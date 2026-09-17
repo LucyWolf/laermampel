@@ -96,7 +96,7 @@ impl Default for Settings {
             comp_knob: 0.0,
             fader_db: 0.0,
             mic_muted: false,
-            gate_range_db: 40.0,
+            gate_range_db: 25.0,
             gate_attack_ms: 2.0,
             gate_hold_ms: 250.0,
             gate_release_ms: 150.0,
