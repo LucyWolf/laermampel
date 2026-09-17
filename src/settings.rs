@@ -60,6 +60,8 @@ pub struct Settings {
     pub denoise: bool,
     /// Puffer zwischen Aufnahme und Ausgabe in ms. Kleiner = weniger Verzögerung, mehr Aussetzer-Risiko.
     pub buffer_ms: f32,
+    /// Gemessenes Rauschprofil (Pegel je Frequenzband in dB), damit es Neustarts übersteht.
+    pub noise_profile: Option<Vec<f32>>,
     /// Ziel-Sprachpegel in dBFS (RMS).
     pub agc_target_db: f32,
     /// Wie schnell runtergeregelt wird.
@@ -102,6 +104,7 @@ impl Default for Settings {
             output_off: false,
             denoise: false,
             buffer_ms: crate::agc::DEFAULT_BUFFER_MS,
+            noise_profile: None,
             agc_target_db: -20.0,
             agc_attack_ms: 40.0,
             agc_release_ms: 1500.0,

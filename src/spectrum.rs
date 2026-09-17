@@ -36,6 +36,7 @@ pub struct Spectrum {
     profile_sum: Vec<f32>,
     profile_count: u32,
     profile_until: Option<Instant>,
+    fresh_profile: Option<Vec<f32>>,
 }
 
 impl Spectrum {
@@ -55,6 +56,7 @@ impl Spectrum {
             profile_sum: vec![0.0; BINS],
             profile_count: 0,
             profile_until: None,
+            fresh_profile: None,
         }
     }
 
@@ -79,6 +81,18 @@ impl Spectrum {
         self.profile_sum.fill(0.0);
         self.profile_count = 0;
         self.profile_until = Some(Instant::now() + Duration::from_secs_f32(PROFILE_SECONDS));
+    }
+
+    /// Gespeichertes Profil übernehmen (passt die Länge nicht, wird es verworfen).
+    pub fn load_profile(&mut self, profile: &[f32]) {
+        if profile.len() == BINS {
+            self.profile_db = Some(profile.to_vec());
+        }
+    }
+
+    /// Frisch fertig gemessenes Profil zum Speichern, höchstens einmal.
+    pub fn take_new_profile(&mut self) -> Option<Vec<f32>> {
+        self.fresh_profile.take()
     }
 
     pub fn clear_profile(&mut self) {
@@ -116,7 +130,9 @@ impl Spectrum {
             self.profile_count += 1;
             if Instant::now() >= until && self.profile_count > 0 {
                 let count = self.profile_count as f32;
-                self.profile_db = Some(self.profile_sum.iter().map(|sum| sum / count).collect());
+                let profile: Vec<f32> = self.profile_sum.iter().map(|sum| sum / count).collect();
+                self.fresh_profile = Some(profile.clone());
+                self.profile_db = Some(profile);
                 self.profile_until = None;
             }
         }
