@@ -39,7 +39,7 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (0–10): unter der Schwelle wird das Mikrofon leiser, z.B. Tastatur und Lüfter in Sprechpausen. 0 = aus, höher = höhere Schwelle. Die Lampe am Knopf zeigt, ob es gerade offen ist.
 - **Gain-Fader:** Grundlautstärke −60 bis +12 dB.
-- **Pegelanzeige:** so laut, wie andere dich hören.
+- **Pegelanzeige:** so laut, wie andere dich hören. Die gelbe Limiter-Linie darin mit der Maus verschieben (−40 bis 0 dB), Doppelklick setzt sie auf −1 dB.
 - **Mute:** Mikrofon für andere stumm. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen unter „Details“.
 
