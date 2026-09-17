@@ -103,6 +103,8 @@ pub struct LaermampelApp {
     display_window_open: bool,
     /// Allgemeine Einstellungen (Version, Autostart, Beenden) hinter dem Zahnrad oben rechts.
     general_window_open: bool,
+    /// Fenster „Rauschen“ mit Filter-Schalter und Frequenz-Diagramm.
+    noise_window_open: bool,
     autostart_enabled: bool,
     autostart_error: Option<String>,
 
@@ -154,6 +156,7 @@ impl LaermampelApp {
             preview_until: None,
             display_window_open: false,
             general_window_open: false,
+            noise_window_open: false,
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
             tray,
@@ -398,6 +401,9 @@ impl LaermampelApp {
             if self.general_window_open {
                 self.general_window_open =
                     self.sub_window(&ctx, "allgemein", "Lärmampel – Einstellungen", [400.0, 640.0], Self::general_ui);
+            }
+            if self.noise_window_open {
+                self.noise_window_open = self.sub_window(&ctx, "rauschen", "Lärmampel – Rauschen", [520.0, 420.0], Self::noise_ui);
             }
             if ui.input(|i| i.viewport().close_requested()) {
                 self.close_settings(ui.ctx());
@@ -747,14 +753,17 @@ impl LaermampelApp {
                         .on_hover_text("Punkt oder Leiste, Monitor, Position, Größe, Helligkeit");
                     self.display_window_open = display_open;
                     ui.add_space(4.0);
-                    let denoise_hint = match rate_48k {
-                        true => "Rauschfilter (RNNoise) gegen Tastatur, Lüfter und Brummen. Wirkt über den Ausgang.",
-                        false => "Der Rauschfilter braucht ein Mikrofon mit 48 kHz.",
-                    };
-                    ui.add_enabled_ui(rate_48k, |ui| {
-                        strip::toggle_button(ui, &mut s.denoise, "Rausch", Color32::from_rgb(70, 110, 170))
-                            .on_hover_text(denoise_hint);
-                    });
+                    // Grün = Filter läuft, blau = nur das Fenster ist offen.
+                    let color = if s.denoise { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
+                    let mut noise_open = self.noise_window_open || s.denoise;
+                    strip::toggle_button(ui, &mut noise_open, "Rausch", color)
+                        .on_hover_text(match (s.denoise, rate_48k) {
+                            (true, _) => "Rauschfilter läuft. Klick öffnet das Fenster mit Diagramm und Profil.",
+                            (false, true) => "Öffnet „Rauschen“: Filter einschalten, Frequenz-Diagramm, Rauschprofil.",
+                            (false, false) => "Öffnet „Rauschen“. Der Filter selbst braucht ein Mikrofon mit 48 kHz.",
+                        })
+                        .clicked()
+                        .then(|| self.noise_window_open = !self.noise_window_open);
                     ui.add_space(88.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
                         .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
@@ -885,6 +894,18 @@ impl LaermampelApp {
         const MIN_HZ: f32 = 50.0;
 
         ui.heading("Rauschen");
+
+        let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
+        ui.add_enabled_ui(rate_48k, |ui| {
+            ui.checkbox(&mut self.settings.denoise, "Rauschfilter (RNNoise)").on_hover_text(
+                "Entfernt Tastatur, Lüfter und Brummen. Wirkt über den Ausgang (VB-Cable) und kostet 10 ms.",
+            );
+        });
+        if !rate_48k {
+            ui.colored_label(RED_TEXT, "Der Filter braucht ein Mikrofon mit 48 kHz.");
+        }
+        ui.separator();
+
         if let Some(total) = self.profile_total_db() {
             ui.label(format!("Gemessenes Rauschen: {total:.0} dB"));
         } else if self.spectrum.profile_running() {
@@ -1131,8 +1152,6 @@ impl LaermampelApp {
     fn general_ui(&mut self, ui: &mut egui::Ui) {
         self.version_ui(ui);
 
-        ui.separator();
-        self.noise_ui(ui);
 
         ui.separator();
         egui::CollapsingHeader::new("Kanalzug: Ausgabe und Feineinstellungen")

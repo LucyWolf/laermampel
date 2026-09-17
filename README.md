@@ -47,7 +47,7 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   - Ist **Ton** an, gibt es eine **gelbe** und eine **rote** Linie mit Pfeil am Rand für die Ampel-Schwellen, zum Ziehen.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB, Anzeige −100 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
-- **Rausch:** Rauschfilter (RNNoise) gegen Tastatur, Lüfter und Brummen. Wirkt über den Ausgang und braucht ein Mikrofon mit 48 kHz.
+- **Rausch:** öffnet das Fenster „Rauschen“ mit Filter-Schalter (RNNoise), Frequenz-Diagramm und Rauschprofil. Grüner Knopf heißt, der Filter läuft; er wirkt über den Ausgang und braucht ein Mikrofon mit 48 kHz.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
 - **Mute:** Mikrofon für andere stumm, die Pegelanzeige wird grau. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
 - Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Fader und Limiter wirken in anderen Programmen nur mit VB-Cable.
@@ -67,7 +67,7 @@ Risiko für Aussetzer.
 
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
-Unter ⚙ → „Rauschen“ zeigt ein Frequenz-Diagramm (wie in ReaFir), was das Mikrofon gerade hört.
+Im Fenster „Rauschen“ (Knopf im Kanalzug) zeigt ein Frequenz-Diagramm (wie in ReaFir), was das Mikrofon gerade hört.
 „Rauschprofil messen“ nimmt zwei Sekunden Stille auf und legt sie als graue Linie darüber; die gelbe Linie ist die Gate-Schwelle.
 
 Bei Problemen hilft die Log-Datei `%LOCALAPPDATA%\\LucyWolf\\Laermampel\\data\\laermampel.log`
