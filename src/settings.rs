@@ -131,6 +131,8 @@ pub struct Settings {
     pub agc_output_id: Option<String>,
     /// Ausgang ausgeschaltet: nichts wird auf ein virtuelles Gerät ausgegeben.
     pub output_off: bool,
+    /// Echounterdrückung: rechnet heraus, was aus den Kopfhörern ins Mikrofon kommt.
+    pub echo_cancel: bool,
     /// Rauschfilter (RNNoise) im Kanalzug.
     pub denoise: bool,
     /// Wie stark der Rauschfilter eingreift.
@@ -181,6 +183,7 @@ impl Default for Settings {
             gate_release_ms: 150.0,
             agc_output_id: None,
             output_off: false,
+            echo_cancel: false,
             denoise: false,
             denoise_level: DenoiseLevel::Medium,
             buffer_ms: crate::agc::DEFAULT_BUFFER_MS,

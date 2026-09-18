@@ -9,6 +9,7 @@ use ringbuf::traits::Split;
 
 use crate::agc::{self, ChainControl, VoiceChain};
 use crate::dsp::{Biquad, METER_HIGHPASS_HZ, METER_LOWPASS_HZ};
+use crate::echo::{self, Echo};
 use crate::lang::t;
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
@@ -162,13 +163,16 @@ pub struct Meter {
     pub input_rate: u32,
     pub agc_output_name: Option<String>,
     pub agc_error: Option<String>,
+    /// Gerät, dessen Ton für die Echounterdrückung mitgehört wird.
+    pub echo_reference: Option<String>,
+    pub echo_error: Option<String>,
 }
 
 impl Meter {
     /// Startet die Aufnahme. Ist `device_id` unbekannt, wird das Standardmikrofon genommen.
     /// Startet die Aufnahme vom ausgewählten Mikrofon. Ein Standardgerät gibt es bewusst nicht:
     /// Ist in Windows VB-Cable als Standard eingestellt, gäbe das eine Rückkopplung.
-    pub fn start(device_id: &str, voice_setup: Option<VoiceSetup>) -> Result<Meter, String> {
+    pub fn start(device_id: &str, voice_setup: Option<VoiceSetup>, echo_cancel: bool) -> Result<Meter, String> {
         let host = cpal::default_host();
         let device = device_id
             .parse::<cpal::DeviceId>()
@@ -223,12 +227,27 @@ impl Meter {
             }
         }
 
+        // Echounterdrückung: hört mit, was aus den Kopfhörern kommt, und rechnet es heraus.
+        let mut echo = None;
+        let mut echo_reference = None;
+        let mut echo_error = None;
+        if echo_cancel {
+            match echo::start_reference(None, Arc::clone(&fault)) {
+                Ok(reference) => {
+                    let unit = Echo::new(input_rate, reference);
+                    echo_reference = Some(unit.reference_name().to_string());
+                    echo = Some(unit);
+                }
+                Err(e) => echo_error = Some(e),
+            }
+        }
+
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &fault, &raw, chain),
-            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &fault, &raw, chain),
-            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, &raw, chain),
-            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, &raw, chain),
-            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, &raw, chain),
+            SampleFormat::F32 => build::<f32>(&device, &config, &shared, &fault, &raw, chain, echo),
+            SampleFormat::I16 => build::<i16>(&device, &config, &shared, &fault, &raw, chain, echo),
+            SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, &raw, chain, echo),
+            SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, &raw, chain, echo),
+            SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, &raw, chain, echo),
             other => return Err(format!("{}: {other}", t("Nicht unterstütztes Audioformat", "Unsupported audio format"))),
         }?;
         stream
@@ -245,6 +264,8 @@ impl Meter {
             input_rate,
             agc_output_name,
             agc_error,
+            echo_reference,
+            echo_error,
         })
     }
 
@@ -273,6 +294,7 @@ fn build<T>(
     fault: &Arc<Fault>,
     raw: &Arc<RawSamples>,
     chain: Option<VoiceChain>,
+    echo: Option<Echo>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample + Send + 'static,
@@ -280,7 +302,7 @@ where
 {
     let sample_rate = config.sample_rate() as f32;
     let channels = config.channels().max(1) as usize;
-    let mut proc = Processor::new(sample_rate, Arc::clone(shared), Arc::clone(raw), chain);
+    let mut proc = Processor::new(sample_rate, Arc::clone(shared), Arc::clone(raw), chain, echo);
     let fault = Arc::clone(fault);
 
     device
@@ -313,10 +335,18 @@ struct Processor {
     raw_block: Vec<f32>,
     /// Rauschfilter, automatische Lautstärke und Ausgabe, falls eingeschaltet.
     chain: Option<VoiceChain>,
+    /// Rechnet den Kopfhörer-Anteil heraus, bevor irgendetwas anderes passiert.
+    echo: Option<Echo>,
 }
 
 impl Processor {
-    fn new(sample_rate: f32, shared: Arc<Mutex<Shared>>, raw: Arc<RawSamples>, chain: Option<VoiceChain>) -> Self {
+    fn new(
+        sample_rate: f32,
+        shared: Arc<Mutex<Shared>>,
+        raw: Arc<RawSamples>,
+        chain: Option<VoiceChain>,
+        echo: Option<Echo>,
+    ) -> Self {
         Self {
             highpass: Biquad::highpass(sample_rate, METER_HIGHPASS_HZ),
             lowpass: Biquad::lowpass(sample_rate, METER_LOWPASS_HZ.min(sample_rate * 0.45)),
@@ -328,6 +358,7 @@ impl Processor {
             raw,
             raw_block: Vec::with_capacity(RAW_BLOCK),
             chain,
+            echo,
         }
     }
 
@@ -339,6 +370,11 @@ impl Processor {
     }
 
     fn push(&mut self, x: f32) {
+        // Zuerst das Echo heraus: alles Weitere soll schon das saubere Mikrofon sehen.
+        let x = match &mut self.echo {
+            Some(echo) => echo.process(x),
+            None => x,
+        };
         self.raw_block.push(x);
         if self.raw_block.len() == RAW_BLOCK {
             self.raw.push_block(&self.raw_block);
@@ -377,7 +413,7 @@ mod tests {
     fn measure(freq: f32, rms_db: f32) -> f32 {
         let rate = 48_000.0;
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
-        let mut proc = Processor::new(rate, Arc::clone(&shared), Arc::new(RawSamples::default()), None);
+        let mut proc = Processor::new(rate, Arc::clone(&shared), Arc::new(RawSamples::default()), None, None);
         let amplitude = 10f32.powf(rms_db / 20.0) * std::f32::consts::SQRT_2;
         // Eine Sekunde einschwingen lassen, dann den letzten Block ablesen.
         for i in 0..rate as usize {
