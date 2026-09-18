@@ -20,8 +20,10 @@ use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
 use crate::volume_gate::{GateParams, VolumeGate};
 
-/// Oberes Ende des Pegelbalkens. Das untere stellt man ein (`bar_min_db`): eng heißt mehr
-/// Auflösung beim Sprechen, -100 zeigt denselben Bereich wie der Kanalzug.
+/// Der Pegelbalken auf dem Bildschirm zeigt genau denselben Bereich wie die Anzeige im
+/// Kanalzug. Sonst sitzt dieselbe Zahl in den beiden Anzeigen an verschiedenen Stellen:
+/// -50 dB stand oben bei 17 %, im Kanalzug bei 50 %.
+const BAR_MIN_DB: f32 = strip::METER_MIN_DB;
 const BAR_MAX_DB: f32 = 0.0;
 const BAR_HEIGHT: f32 = 28.0;
 
@@ -338,8 +340,7 @@ impl LaermampelApp {
 
     fn draw_level_bar(&self, painter: &egui::Painter, rect: Rect, brightness: f32) {
         let to_x = |db: f32| {
-            let min_db = self.settings.bar_min_db.min(BAR_MAX_DB - 10.0);
-            let t = ((db - min_db) / (BAR_MAX_DB - min_db)).clamp(0.0, 1.0);
+            let t = ((db - BAR_MIN_DB) / (BAR_MAX_DB - BAR_MIN_DB)).clamp(0.0, 1.0);
             rect.left() + t * rect.width()
         };
 
@@ -572,13 +573,6 @@ impl LaermampelApp {
             DisplayMode::Dot => ui.add(egui::Slider::new(&mut s.dot_size, 6.0..=80.0).text("Größe").suffix(" px")),
             DisplayMode::Bar => ui.add(egui::Slider::new(&mut s.bar_width, 100.0..=800.0).text("Breite").suffix(" px")),
         };
-        if s.display == DisplayMode::Bar {
-            ui.add(egui::Slider::new(&mut s.bar_min_db, -100.0..=-30.0).text("Bereich ab").suffix(" dB"))
-                .on_hover_text(
-                    "Wo der Balken anfängt. Enger heißt: deine Sprechlautstärke nutzt mehr vom Balken. \
-                     Auf -100 zeigt er genau denselben Bereich wie die Anzeige im Kanalzug.",
-                );
-        }
         ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
         ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
         ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
