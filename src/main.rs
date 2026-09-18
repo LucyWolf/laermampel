@@ -11,6 +11,7 @@ mod audio;
 mod autostart;
 mod beep;
 mod dsp;
+mod echo;
 mod instance;
 mod lang;
 mod level;

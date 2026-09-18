@@ -210,7 +210,7 @@ impl LaermampelApp {
             self.meter_error = Some(audio::no_device().to_string());
             return;
         };
-        match Meter::start(&device_id, voice_setup) {
+        match Meter::start(&device_id, voice_setup, self.settings.echo_cancel) {
             Ok(m) => {
                 let message = format!(
                     "Mikrofon läuft: {} · Ausgabe: {}",
@@ -605,6 +605,9 @@ impl LaermampelApp {
     fn strip_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
+        let echo_reference = self.meter.as_ref().and_then(|m| m.echo_reference.clone());
+        let echo_error = self.meter.as_ref().and_then(|m| m.echo_error.clone());
+        let mut restart_for_echo = false;
         let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
         let devices = self.devices.clone();
         let chosen_name = self
@@ -812,7 +815,26 @@ impl LaermampelApp {
                                 self.spectrum.restart();
                             }
                         });
-                    ui.add_space(88.0);
+                    ui.add_space(4.0);
+                    // Echo: rechnet heraus, was aus den Kopfhörern wieder ins Mikrofon geht.
+                    let echo_color = if s.echo_cancel { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
+                    let echo_hover = match (s.echo_cancel, &echo_reference, &echo_error) {
+                        (true, _, Some(e)) => e.clone(),
+                        (true, Some(name), _) => format!("{} „{name}“.", t("Echounterdrückung läuft, hört mit auf", "Echo cancellation running, listening to")),
+                        (true, None, _) => t("Echounterdrückung an.", "Echo cancellation on.").to_string(),
+                        (false, _, _) => t(
+                            "Rechnet heraus, was aus deinen Kopfhörern wieder ins Mikrofon kommt. Kostet 10 ms.",
+                            "Removes what comes out of your headphones and back into the microphone. Costs 10 ms.",
+                        )
+                        .to_string(),
+                    };
+                    if strip::toggle_button(ui, &mut s.echo_cancel, t("Echo", "Echo"), echo_color)
+                        .on_hover_text(echo_hover)
+                        .clicked()
+                    {
+                        restart_for_echo = true;
+                    }
+                    ui.add_space(52.0);
                     if strip::toggle_button(ui, &mut s.beep_enabled, t("Ton", "Beep"), Color32::from_rgb(200, 120, 30))
                         .on_hover_text(t("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt", "Beeps when you get louder than the red arrow in the meter"))
                         .clicked()
@@ -871,6 +893,10 @@ impl LaermampelApp {
             }
         });
 
+        if restart_for_echo {
+            // Die Echounterdrückung hängt am Aufnahme-Stream, also neu aufsetzen.
+            self.restart_meter();
+        }
         if refresh_devices {
             self.devices = audio::list_input_devices();
         }
