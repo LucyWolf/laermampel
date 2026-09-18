@@ -33,7 +33,7 @@ impl DenoiseLevel {
     }
 
     /// Anteil des ungefilterten Tons, der stehen bleibt. Damit ist gedeckelt, wie viel
-    /// der Filter höchstens wegnehmen darf: 0,32 sind 10 dB, 0,1 sind 20 dB, 0 ist alles.
+    /// der Filter beim Sprechen höchstens wegnehmen darf: 0,32 sind 10 dB, 0,1 sind 20 dB.
     pub fn dry(self) -> f32 {
         match self {
             DenoiseLevel::Leicht => 0.32,
@@ -42,12 +42,26 @@ impl DenoiseLevel {
         }
     }
 
+    /// Wie viel in Sprechpausen zusätzlich abgesenkt wird. Dafür sagt das Netz selbst, ob es
+    /// gerade Sprache hört – so verschwindet auch lauter Krach, den der Filter allein nicht
+    /// schafft (Bohrmaschine, Akkuschrauber), ohne die Stimme anzutasten.
+    pub fn duck_db(self) -> f32 {
+        match self {
+            DenoiseLevel::Leicht => 0.0,
+            DenoiseLevel::Medium => 18.0,
+            DenoiseLevel::Stark => 40.0,
+        }
+    }
+
     pub fn hint(self) -> &'static str {
         match self {
-            DenoiseLevel::Leicht => "Höchstens 10 dB leiser. Klingt am natürlichsten, lässt aber Rauschen stehen.",
-            DenoiseLevel::Medium => "Höchstens 20 dB leiser. Guter Mittelweg für Tastatur und Lüfter.",
-            DenoiseLevel::Stark => "Alles, was der Filter für Rauschen hält, kommt weg. In Pausen ganz still, \
-                                    kann bei leiser Stimme etwas abschneiden.",
+            DenoiseLevel::Leicht => "Filtert nur, senkt höchstens 10 dB ab. Klingt am natürlichsten, \
+                                     lässt aber Geräusche stehen.",
+            DenoiseLevel::Medium => "Filtert bis 20 dB und macht Pausen zusätzlich 18 dB leiser. \
+                                     Guter Mittelweg für Tastatur, Lüfter und Werkzeug.",
+            DenoiseLevel::Stark => "Filtert voll und macht Pausen praktisch still (40 dB). Auch lauter \
+                                    Krach verschwindet zwischen den Wörtern; kann bei sehr leiser Stimme \
+                                    den Anfang eines Wortes streifen.",
         }
     }
 }
