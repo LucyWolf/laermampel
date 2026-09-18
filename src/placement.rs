@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::lang::t;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Anchor {
     TopLeft,
@@ -18,12 +20,12 @@ impl Anchor {
 
     pub fn label(self) -> &'static str {
         match self {
-            Anchor::TopLeft => "↖ Oben links",
-            Anchor::TopCenter => "↑ Oben Mitte",
-            Anchor::TopRight => "↗ Oben rechts",
-            Anchor::BottomLeft => "↙ Unten links",
-            Anchor::BottomCenter => "↓ Unten Mitte",
-            Anchor::BottomRight => "↘ Unten rechts",
+            Anchor::TopLeft => t("↖ Oben links", "↖ Top left"),
+            Anchor::TopCenter => t("↑ Oben Mitte", "↑ Top centre"),
+            Anchor::TopRight => t("↗ Oben rechts", "↗ Top right"),
+            Anchor::BottomLeft => t("↙ Unten links", "↙ Bottom left"),
+            Anchor::BottomCenter => t("↓ Unten Mitte", "↓ Bottom centre"),
+            Anchor::BottomRight => t("↘ Unten rechts", "↘ Bottom right"),
         }
     }
 }
@@ -41,8 +43,8 @@ impl Monitor {
     pub fn label(&self, index: usize) -> String {
         let width = self.work[2] - self.work[0];
         let height = self.work[3] - self.work[1];
-        let primary = if self.primary { ", Hauptbildschirm" } else { "" };
-        format!("Monitor {} ({width}×{height}{primary})", index + 1)
+        let primary = if self.primary { t(", Hauptbildschirm", ", main screen") } else { "" };
+        format!("{} {} ({width}×{height}{primary})", t("Monitor", "Monitor"), index + 1)
     }
 }
 

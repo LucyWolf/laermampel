@@ -4,6 +4,8 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2,
 };
 
+use crate::lang::t;
+
 pub const PANEL: Color32 = Color32::from_rgb(40, 44, 52);
 pub const ACCENT: Color32 = Color32::from_rgb(90, 200, 120);
 const TRACK: Color32 = Color32::from_rgb(22, 24, 28);
@@ -17,7 +19,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, max: f32, label: &str, lit: bool) -> R
 
 /// Drehknopf in dB von `min_db` bis `max_db`; ganz links heißt „aus“. Doppelklick: aus.
 pub fn knob_db(ui: &mut Ui, value: &mut f32, min_db: f32, max_db: f32, label: &str, lit: bool) -> Response {
-    let text = if *value <= min_db + 0.5 { "aus".to_string() } else { format!("{:.0} dB", *value) };
+    let text = if *value <= min_db + 0.5 { t("aus", "off").to_string() } else { format!("{:.0} dB", *value) };
     knob_range(ui, value, min_db, max_db, 1.0, text, label, lit)
 }
 
@@ -319,7 +321,7 @@ pub fn level_meter(
         let area = Rect::from_min_max(column.min, pos2(column.right(), y));
         painter.rect_filled(area, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(90, 80, 10, 225));
         painter.line_segment([pos2(column.left(), y), pos2(column.right(), y)], Stroke::new(2.0, line));
-        let value = if limit_active { format!("{:.0}", *limit_db) } else { "aus".to_string() };
+        let value = if limit_active { format!("{:.0}", *limit_db) } else { t("aus", "off").to_string() };
         let label = format!("Lim\n{value}");
         let font = FontId::proportional(11.0);
         if area.height() >= 30.0 {
@@ -352,14 +354,29 @@ pub fn level_meter(
     }
 
     let hint = match active_line {
-        Some(MeterLine::Yellow) => format!("Gelb ab {:.0} dB · Pfeil ziehen", *yellow),
-        Some(MeterLine::Red) if beeps => format!("Rot und Warnton ab {:.0} dB · Pfeil ziehen", *red),
-        Some(MeterLine::Red) => format!("Rot ab {:.0} dB · Pfeil ziehen", *red),
-        Some(MeterLine::Limit) if limit_running => "Limiter: Linie runterziehen, Doppelklick: aus.".to_string(),
-        Some(MeterLine::Limit) => "Limiter: wirkt erst mit einem Ausgang (VB-Cable). Doppelklick: aus.".to_string(),
+        Some(MeterLine::Yellow) => {
+            format!("{} {:.0} dB · {}", t("Gelb ab", "Yellow from"), *yellow, t("Pfeil ziehen", "drag the arrow"))
+        }
+        Some(MeterLine::Red) if beeps => format!(
+            "{} {:.0} dB · {}",
+            t("Rot und Warnton ab", "Red and beep from"),
+            *red,
+            t("Pfeil ziehen", "drag the arrow")
+        ),
+        Some(MeterLine::Red) => {
+            format!("{} {:.0} dB · {}", t("Rot ab", "Red from"), *red, t("Pfeil ziehen", "drag the arrow"))
+        }
+        Some(MeterLine::Limit) if limit_running => {
+            t("Limiter: Linie runterziehen, Doppelklick: aus.", "Limiter: drag the line down, double-click: off.").to_string()
+        }
+        Some(MeterLine::Limit) => t(
+            "Limiter: wirkt erst mit einem Ausgang (VB-Cable). Doppelklick: aus.",
+            "Limiter: only works with an output (VB-Cable). Double-click: off.",
+        )
+        .to_string(),
         None => String::new(),
     };
-    response.on_hover_text(format!("Stimme {voice_db:.1} dB\n{hint}"))
+    response.on_hover_text(format!("{} {voice_db:.1} dB\n{hint}", t("Pegel", "Level")))
 }
 
 /// Umschalttaste mit eigener Farbe, wenn aktiv.
@@ -375,7 +392,7 @@ pub fn toggle_button(ui: &mut Ui, on: &mut bool, text: &str, active: Color32) ->
 
 /// Mute-Taste, rot wenn aktiv.
 pub fn mute_button(ui: &mut Ui, muted: &mut bool) -> Response {
-    toggle_button(ui, muted, "Mute", Color32::from_rgb(200, 45, 45))
+    toggle_button(ui, muted, t("Mute", "Mute"), Color32::from_rgb(200, 45, 45))
 }
 
 pub const TITLE_BUTTON_WIDTH: f32 = 24.0;

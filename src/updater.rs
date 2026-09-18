@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui;
+
+use crate::lang::t;
 use ureq::ResponseExt;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,7 +68,7 @@ impl Updater {
             Ok(_) => Status::UpToDate,
             Err(e) => {
                 log!("Update-Prüfung fehlgeschlagen: {e}");
-                Status::Failed(format!("Update-Prüfung fehlgeschlagen: {e}"))
+                Status::Failed(format!("{}: {e}", t("Update-Prüfung fehlgeschlagen", "Update check failed")))
             }
         });
     }
@@ -79,7 +81,7 @@ impl Updater {
             Ok(()) => Status::Installed(release),
             Err(e) => {
                 log!("Update fehlgeschlagen: {e}");
-                Status::Failed(format!("Update fehlgeschlagen: {e}"))
+                Status::Failed(format!("{}: {e}", t("Update fehlgeschlagen", "Update failed")))
             }
         });
     }
@@ -132,17 +134,21 @@ fn fetch_latest() -> Result<Release, String> {
     let tag = page_url
         .rsplit_once("/tag/")
         .map(|(_, tag)| tag.trim_end_matches('/').to_string())
-        .ok_or_else(|| "Noch kein Release gefunden".to_string())?;
+        .ok_or_else(|| t("Noch kein Release gefunden", "No release found yet").to_string())?;
     let version = semver::Version::parse(tag.trim_start_matches('v'))
-        .map_err(|_| format!("Unbekanntes Versionsformat: {tag}"))?;
+        .map_err(|_| format!("{}: {tag}", t("Unbekanntes Versionsformat", "Unknown version format")))?;
     let setup_url = format!("{RELEASE_DOWNLOAD_BASE}/{tag}/{SETUP_PREFIX}{version}.exe");
     Ok(Release { version, page_url, setup_url })
 }
 
 fn describe_http_error(error: ureq::Error) -> String {
     match error {
-        ureq::Error::StatusCode(403 | 429) => "GitHub lehnt gerade zu viele Anfragen ab, später nochmal versuchen".to_string(),
-        ureq::Error::StatusCode(404) => "Datei bei GitHub nicht gefunden".to_string(),
+        ureq::Error::StatusCode(403 | 429) => t(
+            "GitHub lehnt gerade zu viele Anfragen ab, später nochmal versuchen",
+            "GitHub is refusing requests right now, try again later",
+        )
+        .to_string(),
+        ureq::Error::StatusCode(404) => t("Datei bei GitHub nicht gefunden", "File not found on GitHub").to_string(),
         other => other.to_string(),
     }
 }
@@ -161,7 +167,7 @@ fn download_and_run_setup(release: &Release) -> Result<(), String> {
 
     // Eine Windows-Exe beginnt immer mit "MZ", schützt vor Fehlerseiten statt Datei.
     if !bytes.starts_with(b"MZ") {
-        return Err("Heruntergeladene Datei ist kein gültiger Installer".to_string());
+        return Err(t("Heruntergeladene Datei ist kein gültiger Installer", "Downloaded file is not a valid installer").to_string());
     }
 
     let setup = std::env::temp_dir().join(format!("{SETUP_PREFIX}{}.exe", release.version));
@@ -173,6 +179,6 @@ fn download_and_run_setup(release: &Release) -> Result<(), String> {
     std::process::Command::new(&setup)
         .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
         .spawn()
-        .map_err(|e| format!("Installer lässt sich nicht starten: {e}"))?;
+        .map_err(|e| format!("{}: {e}", t("Installer lässt sich nicht starten", "Cannot start installer")))?;
     Ok(())
 }

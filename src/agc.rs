@@ -11,6 +11,7 @@ use ringbuf::{HeapCons, HeapProd};
 
 use crate::audio::{Fault, InputDevice, describe};
 use crate::dsp::{Chain, Settings};
+use crate::lang::t;
 
 /// Rückmeldung der Kette für die Anzeige.
 #[derive(Clone, Copy, Debug, Default)]
@@ -23,7 +24,9 @@ pub struct Feedback {
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 /// Meldung, wenn gar kein VB-Cable da ist. Das ist kein Fehler, nur nicht eingerichtet.
-pub const VB_CABLE_MISSING: &str = "VB-Cable ist nicht installiert.";
+pub fn vb_cable_missing() -> &'static str {
+    t("VB-Cable ist nicht installiert.", "VB-Cable is not installed.")
+}
 /// Name des Wiedergabegeräts von VB-Cable. Programme nehmen dann „CABLE Output“ als Mikrofon.
 const VB_CABLE_HINT: &str = "cable input";
 
@@ -196,28 +199,33 @@ pub fn start_output(
                 devices.find(|d| d.description().is_ok_and(|desc| desc.name().to_lowercase().contains(VB_CABLE_HINT)))
             })
         })
-        .ok_or_else(|| VB_CABLE_MISSING.to_string())?;
+        .ok_or_else(|| vb_cable_missing().to_string())?;
 
-    let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Ausgabe".to_string());
+    let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| t("Ausgabe", "Output").to_string());
     // Auf Kopfhörer oder Lautsprecher würde das Mikrofon direkt zurückgespielt.
     if !is_virtual_device(&name) {
         return Err(format!(
-            "„{name}“ ist kein virtuelles Gerät. Dort würdest du dich selbst hören \
-             (bei Lautsprechern gibt es eine Rückkopplung). Bitte VB-Cable als Ausgabe wählen."
+            "„{name}“ {}",
+            t(
+                "ist kein virtuelles Gerät. Dort würdest du dich selbst hören (bei Lautsprechern \
+                 gibt es eine Rückkopplung). Bitte VB-Cable als Ausgabe wählen.",
+                "is not a virtual device. You would hear yourself there (speakers would feed back). \
+                 Please choose VB-Cable as the output.",
+            )
         ));
     }
     let config = device
         .default_output_config()
-        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))?;
+        .map_err(|e| format!("{}: {}", t("Ausgabe lässt sich nicht öffnen", "Cannot open output"), describe(&e)))?;
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => build::<f32>(&device, &config, samples, input_rate, buffer_ms, control, fault),
         SampleFormat::I16 => build::<i16>(&device, &config, samples, input_rate, buffer_ms, control, fault),
         SampleFormat::I32 => build::<i32>(&device, &config, samples, input_rate, buffer_ms, control, fault),
         SampleFormat::U16 => build::<u16>(&device, &config, samples, input_rate, buffer_ms, control, fault),
-        other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
+        other => return Err(format!("{}: {other}", t("Nicht unterstütztes Audioformat", "Unsupported audio format"))),
     }?;
-    stream.play().map_err(|e| format!("Ausgabe lässt sich nicht starten: {}", describe(&e)))?;
+    stream.play().map_err(|e| format!("{}: {}", t("Ausgabe lässt sich nicht starten", "Cannot start output"), describe(&e)))?;
     Ok((stream, name))
 }
 
@@ -253,7 +261,7 @@ where
             move |err| fault.report(err),
             None,
         )
-        .map_err(|e| format!("Ausgabe lässt sich nicht öffnen: {}", describe(&e)))
+        .map_err(|e| format!("{}: {}", t("Ausgabe lässt sich nicht öffnen", "Cannot open output"), describe(&e)))
 }
 
 /// Holt die Samples aus dem Puffer, rechnet die Abtastrate um und gleicht Gangunterschiede aus.

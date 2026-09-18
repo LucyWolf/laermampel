@@ -10,8 +10,6 @@ const PEAK_DECAY_DB_PER_SECOND: f32 = 10.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
 /// Fader und Mute weich überblenden, sonst knackt es.
 const FADER_SMOOTHING_MS: f32 = 10.0;
-/// Ab dieser Sprachwahrscheinlichkeit gilt es als Stimme und es wird nicht abgesenkt.
-const VAD_SPEECH: f32 = 0.6;
 /// Darunter ist es sicher keine Stimme und die volle Absenkung greift.
 const VAD_NOISE: f32 = 0.1;
 /// Zurück auf volle Lautstärke schnell (kein abgeschnittenes erstes Wort), absenken langsam.
@@ -124,6 +122,9 @@ pub struct CompSettings {
 pub struct Settings {
     /// Rauschfilter (RNNoise). Braucht 48 kHz, sonst wird er übersprungen.
     pub denoise: bool,
+    /// Ab dieser Sprachwahrscheinlichkeit gilt es als Stimme und es wird nicht abgesenkt.
+    /// Höher heißt strenger: dann muss sich das Netz sicher sein, sonst wird abgesenkt.
+    pub denoise_speech_vad: f32,
     /// Zusätzliche Absenkung in Sprechpausen, gesteuert vom Netz selbst (0 = aus).
     /// Dafür sorgt der Filter beim Sprechen weiter allein; erst wenn er keine Stimme
     /// erkennt, wird zusätzlich leiser gemacht. So verschwindet auch lauter Krach
@@ -146,6 +147,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             denoise: false,
+            denoise_speech_vad: 0.6,
             denoise_duck_db: 0.0,
             denoise_dry: 0.0,
             gate: GateSettings { enabled: false, threshold_db: -45.0, range_db: 40.0, attack_ms: 2.0, hold_ms: 250.0, release_ms: 150.0 },
@@ -466,7 +468,8 @@ impl Chain {
             mono = denoiser.process(mono, self.settings.denoise_dry);
             // Erkennt das Netz keine Stimme, zusätzlich absenken. Zwischen den beiden
             // Schwellen wird gleitend übergeblendet, sonst pumpt es hörbar.
-            let speech = ((denoiser.vad - VAD_NOISE) / (VAD_SPEECH - VAD_NOISE)).clamp(0.0, 1.0);
+            let speech_vad = self.settings.denoise_speech_vad.max(VAD_NOISE + 0.05);
+            let speech = ((denoiser.vad - VAD_NOISE) / (speech_vad - VAD_NOISE)).clamp(0.0, 1.0);
             let target = self.settings.denoise_duck_db.max(0.0) * (1.0 - speech);
             let k = if target < self.duck_db { self.duck_open_k } else { self.duck_close_k };
             self.duck_db += (target - self.duck_db) * k;
@@ -654,13 +657,13 @@ mod tests {
         };
         // Werte aus settings::DenoiseLevel.
         let leicht = weggenommen(0.32, 0.0);
-        let medium = weggenommen(0.10, 18.0);
-        let stark = weggenommen(0.0, 40.0);
+        let medium = weggenommen(0.0, 40.0);
+        let stark = weggenommen(0.0, 60.0);
         assert!(leicht < medium && medium < stark, "Stufen: {leicht:.1} / {medium:.1} / {stark:.1} dB");
         assert!(leicht < 11.0, "„Leicht“ soll höchstens 10 dB wegnehmen, nimmt aber {leicht:.1} dB");
         // Medium und Stark senken Dauerkrach zusätzlich ab, sobald keine Stimme erkannt wird.
-        assert!(medium > 20.0, "„Medium“ nimmt nur {medium:.1} dB weg");
-        assert!(stark > 35.0, "„Stark“ nimmt nur {stark:.1} dB weg");
+        assert!(medium > 35.0, "„Medium“ nimmt nur {medium:.1} dB weg");
+        assert!(stark > 50.0, "„Stark“ nimmt nur {stark:.1} dB weg");
     }
 
     #[test]
