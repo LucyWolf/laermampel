@@ -9,14 +9,20 @@ use ringbuf::traits::Split;
 
 use crate::agc::{self, ChainControl, VoiceChain};
 use crate::dsp::{Biquad, METER_HIGHPASS_HZ, METER_LOWPASS_HZ};
+use crate::lang::t;
 
 /// Länge eines Messblocks. Kurz, damit die Anzeige sofort reagiert.
 const BLOCK_SECONDS: f32 = 0.02;
 
 pub const SILENCE_DB: f32 = -100.0;
 
-pub const NO_DEVICE: &str = "Kein Gerät ausgewählt";
-pub const MISSING_DEVICE: &str = "Mikrofon nicht gefunden";
+pub fn no_device() -> &'static str {
+    t("Kein Gerät ausgewählt", "No device selected")
+}
+
+pub fn missing_device() -> &'static str {
+    t("Mikrofon nicht gefunden", "Microphone not found")
+}
 
 /// Merkt sich einen Fehler aus einem Audio-Stream, der einen Neustart nötig macht.
 #[derive(Default)]
@@ -47,15 +53,23 @@ pub fn device_name(device: &cpal::Device) -> String {
 /// Verständliche Fehlermeldung, bei den typischen Windows-Ursachen mit Lösung.
 pub fn describe(err: &cpal::Error) -> String {
     match err.kind() {
-        cpal::ErrorKind::PermissionDenied => "Zugriff verweigert. Windows-Einstellungen → Datenschutz → Mikrofon → \
-             „Desktop-Apps Zugriff auf das Mikrofon erlauben“ einschalten."
-            .to_string(),
-        cpal::ErrorKind::DeviceBusy => {
+        cpal::ErrorKind::PermissionDenied => t(
+            "Zugriff verweigert. Windows-Einstellungen → Datenschutz → Mikrofon → \
+             „Desktop-Apps Zugriff auf das Mikrofon erlauben“ einschalten.",
+            "Access denied. Windows Settings → Privacy → Microphone → turn on \
+             “Let desktop apps access your microphone”.",
+        )
+        .to_string(),
+        cpal::ErrorKind::DeviceBusy => t(
             "Gerät ist belegt. Ein anderes Programm nutzt es exklusiv \
-             (Windows-Soundeinstellungen → Gerät → Erweitert → exklusive Nutzung abschalten)."
-                .to_string()
+             (Windows-Soundeinstellungen → Gerät → Erweitert → exklusive Nutzung abschalten).",
+            "Device is busy. Another program has exclusive use of it \
+             (Windows sound settings → device → Advanced → turn off exclusive mode).",
+        )
+        .to_string(),
+        cpal::ErrorKind::DeviceNotAvailable => {
+            t("Gerät nicht verfügbar, vermutlich abgesteckt.", "Device unavailable, probably unplugged.").to_string()
         }
-        cpal::ErrorKind::DeviceNotAvailable => "Gerät nicht verfügbar, vermutlich abgesteckt.".to_string(),
         _ => err.to_string(),
     }
 }
@@ -160,12 +174,12 @@ impl Meter {
             .parse::<cpal::DeviceId>()
             .ok()
             .and_then(|id| host.device_by_id(&id))
-            .ok_or_else(|| MISSING_DEVICE.to_string())?;
+            .ok_or_else(|| missing_device().to_string())?;
         let input_is_virtual = agc::is_virtual_device(&device_name(&device));
 
         let config = device
             .default_input_config()
-            .map_err(|e| format!("Mikrofon lässt sich nicht öffnen: {}", describe(&e)))?;
+            .map_err(|e| format!("{}: {}", t("Mikrofon lässt sich nicht öffnen", "Cannot open microphone"), describe(&e)))?;
 
         let shared = Arc::new(Mutex::new(Shared { peak_db: SILENCE_DB, fresh: false }));
         let fault = Arc::new(Fault::default());
@@ -179,9 +193,15 @@ impl Meter {
         let mut chain = None;
         if voice_setup.is_some() && input_is_virtual {
             agc_error = Some(format!(
-                "Als Mikrofon ist „{}“ gewählt, also VB-Cable selbst. Das gäbe eine Rückkopplung, \
-                 deshalb ist der Kanalzug aus. Bitte oben dein echtes Mikrofon auswählen.",
-                device_name(&device)
+                "{} „{}“{}",
+                t("Als Mikrofon ist", "The microphone is set to"),
+                device_name(&device),
+                t(
+                    " gewählt, also VB-Cable selbst. Das gäbe eine Rückkopplung, deshalb ist der \
+                     Kanalzug aus. Bitte oben dein echtes Mikrofon auswählen.",
+                    " – that is VB-Cable itself. It would feed back, so the channel strip is off. \
+                     Please pick your real microphone above.",
+                )
             ));
         } else if let Some(setup) = voice_setup {
             let (producer, consumer) = HeapRb::<f32>::new(input_rate as usize).split();
@@ -209,11 +229,11 @@ impl Meter {
             SampleFormat::I32 => build::<i32>(&device, &config, &shared, &fault, &raw, chain),
             SampleFormat::U16 => build::<u16>(&device, &config, &shared, &fault, &raw, chain),
             SampleFormat::U8 => build::<u8>(&device, &config, &shared, &fault, &raw, chain),
-            other => return Err(format!("Nicht unterstütztes Audioformat: {other}")),
+            other => return Err(format!("{}: {other}", t("Nicht unterstütztes Audioformat", "Unsupported audio format"))),
         }?;
         stream
             .play()
-            .map_err(|e| format!("Aufnahme lässt sich nicht starten: {}", describe(&e)))?;
+            .map_err(|e| format!("{}: {}", t("Aufnahme lässt sich nicht starten", "Cannot start recording"), describe(&e)))?;
 
         Ok(Meter {
             _stream: stream,
@@ -276,7 +296,7 @@ where
             move |err| fault.report(err),
             None,
         )
-        .map_err(|e| format!("Aufnahme lässt sich nicht öffnen: {}", describe(&e)))
+        .map_err(|e| format!("{}: {}", t("Aufnahme lässt sich nicht öffnen", "Cannot open recording"), describe(&e)))
 }
 
 struct Processor {

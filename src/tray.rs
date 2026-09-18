@@ -16,6 +16,7 @@ mod imp {
 
     use super::{TrayAction, Zone};
     use crate::app::zone_rgb;
+    use crate::lang::t;
 
     const ICON_SIZE: u32 = 32;
 
@@ -29,9 +30,9 @@ mod imp {
 
     impl Tray {
         pub fn new() -> Option<Self> {
-            let settings = MenuItem::new("Einstellungen", true, None);
-            let mute = CheckMenuItem::new("Mikrofon stumm", true, false, None);
-            let quit = MenuItem::new("Beenden", true, None);
+            let settings = MenuItem::new(t("Einstellungen", "Settings"), true, None);
+            let mute = CheckMenuItem::new(t("Mikrofon stumm", "Mute microphone"), true, false, None);
+            let quit = MenuItem::new(t("Beenden", "Quit"), true, None);
             let menu = Menu::new();
             menu.append_items(&[&settings, &mute, &PredefinedMenuItem::separator(), &quit]).ok()?;
 

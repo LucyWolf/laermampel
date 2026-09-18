@@ -12,6 +12,7 @@ mod autostart;
 mod beep;
 mod dsp;
 mod instance;
+mod lang;
 mod level;
 mod placement;
 mod settings;
@@ -41,6 +42,7 @@ fn main() -> eframe::Result {
     };
 
     let settings = settings::load();
+    lang::apply(settings.language);
 
     let viewport = egui::ViewportBuilder::default()
         .with_title("Lärmampel")

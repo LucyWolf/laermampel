@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::lang::{Language, t};
 use crate::placement::Anchor;
 
 /// Gate-Knopf ganz links: lässt alles durch.
@@ -26,9 +27,9 @@ impl DenoiseLevel {
 
     pub fn label(self) -> &'static str {
         match self {
-            DenoiseLevel::Leicht => "Leicht",
-            DenoiseLevel::Medium => "Medium",
-            DenoiseLevel::Stark => "Stark",
+            DenoiseLevel::Leicht => t("Leicht", "Light"),
+            DenoiseLevel::Medium => t("Medium", "Medium"),
+            DenoiseLevel::Stark => t("Stark", "Strong"),
         }
     }
 
@@ -37,8 +38,16 @@ impl DenoiseLevel {
     pub fn dry(self) -> f32 {
         match self {
             DenoiseLevel::Leicht => 0.32,
-            DenoiseLevel::Medium => 0.10,
+            DenoiseLevel::Medium => 0.0,
             DenoiseLevel::Stark => 0.0,
+        }
+    }
+
+    /// Ab wann es als Stimme gilt. „Stark“ ist strenger: im Zweifel wird abgesenkt.
+    pub fn speech_vad(self) -> f32 {
+        match self {
+            DenoiseLevel::Leicht | DenoiseLevel::Medium => 0.6,
+            DenoiseLevel::Stark => 0.85,
         }
     }
 
@@ -48,20 +57,29 @@ impl DenoiseLevel {
     pub fn duck_db(self) -> f32 {
         match self {
             DenoiseLevel::Leicht => 0.0,
-            DenoiseLevel::Medium => 18.0,
-            DenoiseLevel::Stark => 40.0,
+            DenoiseLevel::Medium => 40.0,
+            DenoiseLevel::Stark => 60.0,
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            DenoiseLevel::Leicht => "Filtert nur, senkt höchstens 10 dB ab. Klingt am natürlichsten, \
-                                     lässt aber Geräusche stehen.",
-            DenoiseLevel::Medium => "Filtert bis 20 dB und macht Pausen zusätzlich 18 dB leiser. \
-                                     Guter Mittelweg für Tastatur, Lüfter und Werkzeug.",
-            DenoiseLevel::Stark => "Filtert voll und macht Pausen praktisch still (40 dB). Auch lauter \
-                                    Krach verschwindet zwischen den Wörtern; kann bei sehr leiser Stimme \
-                                    den Anfang eines Wortes streifen.",
+            DenoiseLevel::Leicht => t(
+                "Filtert nur, senkt höchstens 10 dB ab. Klingt am natürlichsten, lässt aber Geräusche stehen.",
+                "Filter only, at most 10 dB down. Sounds most natural but leaves noise in.",
+            ),
+            DenoiseLevel::Medium => t(
+                "Filtert voll und macht Sprechpausen 40 dB leiser. Auch lauter Krach wie eine \
+                 Bohrmaschine verschwindet zwischen den Wörtern.",
+                "Full filtering, and pauses go 40 dB down. Even loud noise like a power drill \
+                 disappears between words.",
+            ),
+            DenoiseLevel::Stark => t(
+                "Wie Medium, nur strenger: im Zweifel wird abgesenkt, Pausen werden 60 dB leiser \
+                 (praktisch still). Kann bei sehr leiser Stimme den Anfang eines Wortes streifen.",
+                "Like medium but stricter: when in doubt it ducks, pauses go 60 dB down (practically \
+                 silent). May clip the start of a word if you speak very quietly.",
+            ),
         }
     }
 }
@@ -69,6 +87,8 @@ impl DenoiseLevel {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Sprache der Oberfläche.
+    pub language: Language,
     pub device_id: Option<String>,
 
     /// Schwellen in dBFS.
@@ -133,6 +153,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: Language::Auto,
             device_id: None,
             yellow_db: -24.0,
             red_db: -18.0,

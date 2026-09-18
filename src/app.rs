@@ -11,6 +11,7 @@ use crate::autostart;
 use crate::beep;
 use crate::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
 use crate::instance;
+use crate::lang::{self, Language, t};
 use crate::level::{Level, Zone};
 use crate::placement::{self, Anchor, Monitor, PhysicalRect};
 use crate::settings::{self, DenoiseLevel, DisplayMode, Settings};
@@ -206,7 +207,7 @@ impl LaermampelApp {
             control: Arc::clone(&self.chain_control),
         });
         let Some(device_id) = self.settings.device_id.clone() else {
-            self.meter_error = Some(audio::NO_DEVICE.to_string());
+            self.meter_error = Some(audio::no_device().to_string());
             return;
         };
         match Meter::start(&device_id, voice_setup) {
@@ -248,6 +249,7 @@ impl LaermampelApp {
             denoise: self.denoise_active(),
             denoise_dry: self.settings.denoise_level.dry(),
             denoise_duck_db: self.settings.denoise_level.duck_db(),
+            denoise_speech_vad: self.settings.denoise_level.speech_vad(),
             gate: GateSettings {
                 enabled: gate_on(s),
                 threshold_db: s.gate_threshold_db,
@@ -411,7 +413,7 @@ impl LaermampelApp {
         }
         let id = ViewportId::from_hash_of("einstellungen");
         let builder = egui::ViewportBuilder::default()
-            .with_title("Lärmampel – Einstellungen")
+            .with_title(t("Lärmampel – Einstellungen", "Lärmampel – Settings"))
             .with_icon(Arc::clone(&self.icon))
             .with_inner_size([220.0, 470.0])
             .with_resizable(false)
@@ -429,14 +431,14 @@ impl LaermampelApp {
 
             let ctx = ui.ctx().clone();
             if self.display_window_open {
-                self.display_window_open = self.sub_window(&ctx, "anzeige", "Lärmampel – Anzeige", [360.0, 420.0], Self::display_ui);
+                self.display_window_open = self.sub_window(&ctx, "anzeige", t("Lärmampel – Anzeige", "Lärmampel – Display"), [360.0, 420.0], Self::display_ui);
             }
             if self.general_window_open {
                 self.general_window_open =
-                    self.sub_window(&ctx, "allgemein", "Lärmampel – Einstellungen", [400.0, 640.0], Self::general_ui);
+                    self.sub_window(&ctx, "allgemein", t("Lärmampel – Einstellungen", "Lärmampel – Settings"), [400.0, 640.0], Self::general_ui);
             }
             if self.noise_window_open {
-                self.noise_window_open = self.sub_window(&ctx, "rauschen", "Lärmampel – Rauschen", [520.0, 420.0], Self::noise_ui);
+                self.noise_window_open = self.sub_window(&ctx, "rauschen", t("Lärmampel – Rauschen", "Lärmampel – Noise"), [520.0, 420.0], Self::noise_ui);
             }
             if ui.input(|i| i.viewport().close_requested()) {
                 self.close_settings(ui.ctx());
@@ -471,12 +473,12 @@ impl LaermampelApp {
     }
 
     fn version_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Version");
+        ui.heading(t("Version", "Version"));
         ui.horizontal(|ui| {
             ui.label(format!("Lärmampel v{}", updater::CURRENT_VERSION));
             #[cfg(windows)]
             if let Some(path) = crate::log::path()
-                && ui.small_button("Log-Datei zeigen").clicked()
+                && ui.small_button(t("Log-Datei zeigen", "Show log file")).clicked()
             {
                 let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
             }
@@ -484,47 +486,47 @@ impl LaermampelApp {
         let ctx = ui.ctx().clone();
         match self.updater.status() {
             Status::Idle => {
-                if ui.button("Nach Updates suchen").clicked() {
+                if ui.button(t("Nach Updates suchen", "Check for updates")).clicked() {
                     self.updater.check(&ctx);
                 }
             }
             Status::UpToDate => {
-                ui.label("Du hast die neueste Version.");
-                if ui.button("Nach Updates suchen").clicked() {
+                ui.label(t("Du hast die neueste Version.", "You have the latest version."));
+                if ui.button(t("Nach Updates suchen", "Check for updates")).clicked() {
                     self.updater.check(&ctx);
                 }
             }
             Status::Failed(e) => {
                 ui.colored_label(RED_TEXT, e);
-                if ui.button("Nochmal versuchen").clicked() {
+                if ui.button(t("Nochmal versuchen", "Try again")).clicked() {
                     self.updater.check(&ctx);
                 }
             }
             Status::Checking => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Suche nach Updates …");
+                    ui.label(t("Suche nach Updates …", "Looking for updates …"));
                 });
             }
             Status::Available(release) => {
-                ui.colored_label(Color32::from_rgb(90, 200, 120), format!("Neue Version v{} verfügbar", release.version));
+                ui.colored_label(Color32::from_rgb(90, 200, 120), format!("{} v{}", t("Neue Version verfügbar:", "New version available:"), release.version));
                 ui.horizontal(|ui| {
-                    if release.installable() && ui.button("⬆ Update installieren").clicked() {
+                    if release.installable() && ui.button(t("⬆ Update installieren", "⬆ Install update")).clicked() {
                         self.updater.install(&ctx, release.clone());
                     }
-                    ui.hyperlink_to("Was ist neu?", &release.page_url);
+                    ui.hyperlink_to(t("Was ist neu?", "What's new?"), &release.page_url);
                 });
             }
             Status::Installing(release) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("Lade v{} herunter …", release.version));
+                    ui.label(format!("{} v{} …", t("Lade herunter:", "Downloading:"), release.version));
                 });
             }
             Status::Installed(release) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("Installiere v{} …", release.version));
+                    ui.label(format!("{} v{} …", t("Installiere:", "Installing:"), release.version));
                 });
             }
         }
@@ -544,16 +546,16 @@ impl LaermampelApp {
     fn display_ui(&mut self, ui: &mut egui::Ui) {
         let s = &mut self.settings;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut s.display, DisplayMode::Dot, "● Punkt");
-            ui.selectable_value(&mut s.display, DisplayMode::Bar, "▬ Leiste mit Pegel");
+            ui.selectable_value(&mut s.display, DisplayMode::Dot, t("● Punkt", "● Dot"));
+            ui.selectable_value(&mut s.display, DisplayMode::Bar, t("▬ Leiste mit Pegel", "▬ Bar with level"));
         });
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label("Monitor");
+            ui.label(t("Monitor", "Monitor"));
             let selected = match self.monitors.get(s.monitor) {
                 Some(m) => m.label(s.monitor),
-                None => format!("Monitor {} (nicht angeschlossen)", s.monitor + 1),
+                None => format!("{} {} {}", t("Monitor", "Monitor"), s.monitor + 1, t("(nicht angeschlossen)", "(not connected)")),
             };
             egui::ComboBox::from_id_salt("monitor").selected_text(selected).width(240.0).show_ui(ui, |ui| {
                 for (i, m) in self.monitors.iter().enumerate() {
@@ -563,7 +565,7 @@ impl LaermampelApp {
         });
 
         ui.add_space(4.0);
-        ui.label("Position");
+        ui.label(t("Position", "Position"));
         egui::Grid::new("anchor").num_columns(3).show(ui, |ui| {
             for row in [Anchor::TOP_ROW, Anchor::BOTTOM_ROW] {
                 for anchor in row {
@@ -575,27 +577,27 @@ impl LaermampelApp {
 
         ui.add_space(4.0);
         match s.display {
-            DisplayMode::Dot => ui.add(egui::Slider::new(&mut s.dot_size, 6.0..=80.0).text("Größe").suffix(" px")),
-            DisplayMode::Bar => ui.add(egui::Slider::new(&mut s.bar_width, 100.0..=800.0).text("Breite").suffix(" px")),
+            DisplayMode::Dot => ui.add(egui::Slider::new(&mut s.dot_size, 6.0..=80.0).text(t("Größe", "Size")).suffix(" px")),
+            DisplayMode::Bar => ui.add(egui::Slider::new(&mut s.bar_width, 100.0..=800.0).text(t("Breite", "Width")).suffix(" px")),
         };
-        ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text("Abstand zum Rand").suffix(" px"));
-        ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text("Helligkeit Gelb/Rot"));
-        ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text("Helligkeit Grün"));
+        ui.add(egui::Slider::new(&mut s.margin, 0.0..=200.0).text(t("Abstand zum Rand", "Margin")).suffix(" px"));
+        ui.add(egui::Slider::new(&mut s.brightness, 0.0..=1.0).text(t("Helligkeit Gelb/Rot", "Brightness yellow/red")));
+        ui.add(egui::Slider::new(&mut s.green_brightness, 0.0..=1.0).text(t("Helligkeit Grün", "Brightness green")));
         ui.add(
             egui::Slider::new(&mut s.opacity, 0.05..=1.0)
-                .text("Deckkraft")
+                .text(t("Deckkraft", "Opacity"))
                 .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
         )
-        .on_hover_text("Ganz rechts deckt die Anzeige voll, nach links wird sie durchsichtig.");
+        .on_hover_text(t("Ganz rechts deckt die Anzeige voll, nach links wird sie durchsichtig.", "Fully opaque at the right, see-through towards the left."));
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Vorschau: 3 s rot").on_hover_text("Zeigt, wo die Anzeige gerade sitzt").clicked() {
+            if ui.button(t("Vorschau: 3 s rot", "Preview: 3 s red")).on_hover_text(t("Zeigt, wo die Anzeige gerade sitzt", "Shows where the display currently sits")).clicked() {
                 self.preview_until = Some(Instant::now() + PREVIEW_DURATION);
             }
             match self.applied_rect {
-                Some(r) => ui.weak(format!("Position {}, {} · {}×{} px", r.x, r.y, r.w, r.h)),
-                None => ui.colored_label(RED_TEXT, "Kein Monitor gefunden"),
+                Some(r) => ui.weak(format!("{} {}, {} · {}×{} px", t("Position", "Position"), r.x, r.y, r.w, r.h)),
+                None => ui.colored_label(RED_TEXT, t("Kein Monitor gefunden", "No monitor found")),
             };
         });
     }
@@ -611,15 +613,15 @@ impl LaermampelApp {
             .as_ref()
             .and_then(|id| devices.iter().find(|d| &d.id == id).map(|d| d.name.clone()));
         let device_problem = match (&self.settings.device_id, &chosen_name) {
-            (None, _) => Some(audio::NO_DEVICE),
-            (Some(_), None) => Some(audio::MISSING_DEVICE),
+            (None, _) => Some(audio::no_device()),
+            (Some(_), None) => Some(audio::missing_device()),
             _ => None,
         };
         // Andere Fehler (Zugriff verweigert, belegt …) zusätzlich unter dem Gerätenamen.
         let other_error = self
             .meter_error
             .clone()
-            .filter(|e| e != audio::NO_DEVICE && e != audio::MISSING_DEVICE && device_problem.is_none());
+            .filter(|e| e != audio::no_device() && e != audio::missing_device() && device_problem.is_none());
         let current_id = self.settings.device_id.clone();
         let mut picked: Option<String> = None;
         let mut refresh_devices = false;
@@ -688,13 +690,17 @@ impl LaermampelApp {
                     painter.circle_filled(Pos2::new(drag_rect.right() - 6.0, drag_rect.center().y), 4.0, strip::ACCENT);
                 }
                 if strip::title_button(ui, strip::TitleIcon::Gear, self.general_window_open)
-                    .on_hover_text(if update_available { "Einstellungen · Update verfügbar" } else { "Einstellungen" })
+                    .on_hover_text(if update_available {
+                        t("Einstellungen · Update verfügbar", "Settings · update available")
+                    } else {
+                        t("Einstellungen", "Settings")
+                    })
                     .clicked()
                 {
                     self.general_window_open = !self.general_window_open;
                 }
-                minimize = strip::title_button(ui, strip::TitleIcon::Minimize, false).on_hover_text("Minimieren").clicked();
-                close = strip::title_button(ui, strip::TitleIcon::Close, false).on_hover_text("Schließen").clicked();
+                minimize = strip::title_button(ui, strip::TitleIcon::Minimize, false).on_hover_text(t("Minimieren", "Minimize")).clicked();
+                close = strip::title_button(ui, strip::TitleIcon::Close, false).on_hover_text(t("Schließen", "Close")).clicked();
             });
             if minimize {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
@@ -704,7 +710,7 @@ impl LaermampelApp {
             }
 
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("MIKROFON").strong().size(14.0).color(Color32::WHITE));
+                ui.label(egui::RichText::new(t("MIKROFON", "MICROPHONE")).strong().size(14.0).color(Color32::WHITE));
 
                 // Gerätename anklicken öffnet die Auswahl. Fehlt ein Gerät, blinkt es rot.
                 let text = match (device_problem, &chosen_name) {
@@ -721,11 +727,11 @@ impl LaermampelApp {
                 };
                 let menu = ui.menu_button(text, |ui| {
                     if devices.is_empty() {
-                        ui.label("Keine Mikrofone gefunden");
+                        ui.label(t("Keine Mikrofone gefunden", "No microphones found"));
                     }
                     for d in &devices {
                         let active = current_id.as_deref() == Some(d.id.as_str());
-                        let label = if agc::is_virtual_device(&d.name) { format!("{} (virtuell)", d.name) } else { d.name.clone() };
+                        let label = if agc::is_virtual_device(&d.name) { format!("{} {}", d.name, t("(virtuell)", "(virtual)")) } else { d.name.clone() };
                         if ui.selectable_label(active, label).clicked() {
                             picked = Some(d.id.clone());
                             ui.close();
@@ -747,21 +753,25 @@ impl LaermampelApp {
                 ui.add_space(20.0);
                 strip::knob(ui, &mut s.comp_knob, 10.0, "Comp.", false).on_hover_text(if s.comp_knob > KNOB_OFF {
                     format!(
-                        "Automatische Lautstärke: bis ±{:.0} dB, gerade {:+.1} dB",
+                        "{}: ±{:.0} dB, {} {:+.1} dB",
+                        t("Automatische Lautstärke bis", "Auto level up to"),
                         comp_range_db(s.comp_knob),
+                        t("gerade", "currently"),
                         feedback.map_or(0.0, |f| f.comp_gain_db)
                     )
                 } else {
-                    "Automatische Lautstärke: aus".to_string()
+                    t("Automatische Lautstärke: aus", "Auto level: off").to_string()
                 });
                 let gate_hover = if gate_on(s) {
                     format!(
-                        "Noise Gate: Schwelle {:.0} dB, Mikrofon gerade {:.0} dB",
+                        "{}: {:.0} dB, {} {:.0} dB",
+                        t("Noise Gate: Schwelle", "Noise gate: threshold"),
                         s.gate_threshold_db,
+                        t("Mikrofon gerade", "microphone currently"),
                         feedback.map_or(voice_db, |f| f.gate_level_db)
                     )
                 } else {
-                    "Noise Gate: aus (ganz links)".to_string()
+                    t("Noise Gate: aus (ganz links)", "Noise gate: off (fully left)").to_string()
                 };
                 strip::knob_db(ui, &mut s.gate_threshold_db, settings::GATE_OFF_DB, 0.0, "Gate", gate_open).on_hover_text(gate_hover);
             });
@@ -774,26 +784,26 @@ impl LaermampelApp {
                 // Bildschirm: beide Anzeigen sollen bei derselben Stimme dasselbe zeigen.
                 let zones = (&mut s.yellow_db, &mut s.red_db);
                 strip::level_meter(ui, meter_db, muted, gate_marker, running, &mut s.agc_ceiling_db, zones, beeps, 230.0);
-                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text("Gain · Doppelklick: 0 dB");
+                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text(t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"));
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
-                    strip::toggle_button(ui, &mut display_open, "Anzeige", Color32::from_rgb(70, 110, 170))
-                        .on_hover_text("Punkt oder Leiste, Monitor, Position, Größe, Helligkeit");
+                    strip::toggle_button(ui, &mut display_open, t("Anzeige", "Display"), Color32::from_rgb(70, 110, 170))
+                        .on_hover_text(t("Punkt oder Leiste, Monitor, Position, Größe, Helligkeit", "Dot or bar, monitor, position, size, brightness"));
                     self.display_window_open = display_open;
                     ui.add_space(4.0);
                     // Grün = Filter läuft, blau = nur das Fenster ist offen.
                     let filtering = s.denoise && rate_48k;
                     let color = if filtering { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
                     let mut noise_open = self.noise_window_open || filtering;
-                    strip::toggle_button(ui, &mut noise_open, "Rausch", color)
+                    strip::toggle_button(ui, &mut noise_open, t("Rausch", "Noise"), color)
                         .on_hover_text(match (filtering, rate_48k) {
                             (true, _) => {
-                                format!("Rauschfilter läuft, Stufe {}. Klick öffnet das Fenster.", s.denoise_level.label())
+                                format!("{} {}. {}", t("Geräuschfilter läuft, Stufe", "Noise filter running, level"), s.denoise_level.label(), t("Klick öffnet das Fenster.", "Click opens the window."))
                             }
                             (false, true) => {
-                                "Öffnet „Rauschen“: Filter einschalten (3 Stufen), Diagramm, Rauschprofil.".to_string()
+                                t("Öffnet „Rauschen“: Filter einschalten (3 Stufen), Diagramm, Rauschprofil.", "Opens “Noise”: turn the filter on (3 levels), spectrum, noise profile.").to_string()
                             }
-                            (false, false) => "Öffnet „Rauschen“. Der Filter braucht ein Mikrofon mit 48 kHz.".to_string(),
+                            (false, false) => t("Öffnet „Rauschen“. Der Filter braucht ein Mikrofon mit 48 kHz.", "Opens “Noise”. The filter itself needs a 48 kHz microphone.").to_string(),
                         })
                         .clicked()
                         .then(|| {
@@ -803,8 +813,8 @@ impl LaermampelApp {
                             }
                         });
                     ui.add_space(88.0);
-                    if strip::toggle_button(ui, &mut s.beep_enabled, "Ton", Color32::from_rgb(200, 120, 30))
-                        .on_hover_text("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt")
+                    if strip::toggle_button(ui, &mut s.beep_enabled, t("Ton", "Beep"), Color32::from_rgb(200, 120, 30))
+                        .on_hover_text(t("Warnton, wenn deine Stimme über den roten Pfeil in der Anzeige kommt", "Beeps when you get louder than the red arrow in the meter"))
                         .clicked()
                         && s.beep_enabled
                     {
@@ -816,7 +826,7 @@ impl LaermampelApp {
             });
 
             // Genauer Wert zum Ablesen, z.B. um die Gate-Schwelle passend zu setzen.
-                let level = if voice_db > -99.5 { format!("Stimme {voice_db:.0} dB") } else { "Stimme –".to_string() };
+                let level = if voice_db > -99.5 { format!("{} {voice_db:.0} dB", t("Stimme", "Voice")) } else { format!("{} –", t("Stimme", "Voice")) };
             let reading = match self.latency_ms() {
                 Some(ms) => format!("{level} · {ms:.0} ms"),
                 None => level,
@@ -827,27 +837,35 @@ impl LaermampelApp {
             self.output_picker_ui(ui);
 
             if nothing_processes {
-                let verb = if needs_cable.len() == 1 { "wirkt" } else { "wirken" };
+                let verb = if needs_cable.len() == 1 { t("wirkt", "works") } else { t("wirken", "work") };
                 // Der Ausgang ist von Hand abgeschaltet? Dann ist nicht VB-Cable das Problem.
                 let off = self.settings.output_off;
-                let reason = if off { "erst mit einem Ausgang" } else { "nur mit VB-Cable" };
+                let reason = if off { t("erst mit einem Ausgang", "only with an output") } else { t("nur mit VB-Cable", "only with VB-Cable") };
                 let text = format!("⚠ {} {verb} {reason}", needs_cable.join(", "));
                 let warning = egui::RichText::new(text).small().color(RED_TEXT);
                 let hint = if off {
-                    "Der Ausgang steht auf „aus“. Darüber „Ausgang“ anklicken und ein virtuelles Gerät wählen, \
-                     dann wirkt es auch in anderen Programmen."
+                    t(
+                        "Der Ausgang steht auf „aus“. Darüber „Ausgang“ anklicken und ein virtuelles Gerät \
+                         wählen, dann wirkt es auch in anderen Programmen.",
+                        "The output is off. Click “Output” above and pick a virtual device, then it also \
+                         works in other programs.",
+                    )
                 } else {
-                    "Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Zurückstellen: \
-                     Doppelklick auf den Knopf bzw. Fader, Limiter per Doppelklick in der Anzeige."
+                    t(
+                        "Wirkt in anderen Programmen erst, wenn VB-Cable installiert ist. Zurückstellen: \
+                         Doppelklick auf den Knopf bzw. Fader, Limiter per Doppelklick in der Anzeige.",
+                        "Only reaches other programs once VB-Cable is installed. To reset: double-click the \
+                         knob or fader, double-click the limiter in the meter.",
+                    )
                 };
                 if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text(hint).clicked() {
                     self.general_window_open = true;
                 }
             }
             // Fehlendes VB-Cable ist kein Fehler, nur kaputte Einstellungen werden gemeldet.
-            else if output_error.as_deref().is_some_and(|e| e != agc::VB_CABLE_MISSING) {
-                let warning = egui::RichText::new("⚠ Ausgabe prüfen").small().color(RED_TEXT);
-                if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text("Öffnet die Einstellungen").clicked() {
+            else if output_error.as_deref().is_some_and(|e| e != agc::vb_cable_missing()) {
+                let warning = egui::RichText::new(t("⚠ Ausgabe prüfen", "⚠ Check output")).small().color(RED_TEXT);
+                if ui.add(egui::Label::new(warning).sense(egui::Sense::click())).on_hover_text(t("Öffnet die Einstellungen", "Opens the settings")).clicked() {
                     self.general_window_open = true;
                 }
             }
@@ -867,13 +885,13 @@ impl LaermampelApp {
     /// Ausgang im Kanalzug wählen: aus, automatisch VB-Cable, oder ein virtuelles Gerät.
     fn output_picker_ui(&mut self, ui: &mut egui::Ui) {
         let active_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
-        let missing = self.meter.as_ref().and_then(|m| m.agc_error.as_deref()) == Some(agc::VB_CABLE_MISSING);
+        let missing = self.meter.as_ref().and_then(|m| m.agc_error.as_deref()) == Some(agc::vb_cable_missing());
         let current = if self.settings.output_off {
-            "aus".to_string()
+            t("aus", "off").to_string()
         } else if let Some(name) = active_name {
             name
         } else if missing {
-            "kein virtuelles Gerät".to_string()
+            t("kein virtuelles Gerät", "no virtual device").to_string()
         } else {
             "–".to_string()
         };
@@ -884,21 +902,21 @@ impl LaermampelApp {
         let mut refresh = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new("Ausgang").small().color(Color32::from_rgb(170, 176, 186)));
+            ui.label(egui::RichText::new(t("Ausgang", "Output")).small().color(Color32::from_rgb(170, 176, 186)));
             let text = egui::RichText::new(format!("{current} ▾")).small();
             let menu = ui.menu_button(text, |ui| {
-                if ui.selectable_label(off, "Aus").clicked() {
+                if ui.selectable_label(off, t("Aus", "Off")).clicked() {
                     pick = Some((true, None));
                     ui.close();
                 }
-                if ui.selectable_label(!off && chosen.is_none(), "Automatisch (VB-Cable)").clicked() {
+                if ui.selectable_label(!off && chosen.is_none(), t("Automatisch (VB-Cable)", "Automatic (VB-Cable)")).clicked() {
                     pick = Some((false, None));
                     ui.close();
                 }
                 if devices.is_empty() {
                     ui.separator();
-                    ui.label("Kein virtuelles Gerät gefunden.");
-                    ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
+                    ui.label(t("Kein virtuelles Gerät gefunden.", "No virtual device found."));
+                    ui.hyperlink_to(t("VB-Cable herunterladen", "Download VB-Cable"), agc::VB_CABLE_URL);
                 } else {
                     ui.separator();
                     for d in &devices {
@@ -914,8 +932,14 @@ impl LaermampelApp {
                 refresh = true;
             }
             menu.response.on_hover_text(
-                "Wohin das bearbeitete Mikrofon geht. In Discord usw. dann das passende Gegenstück als Mikrofon \
-                 wählen, bei VB-Cable „CABLE Output“. Kopfhörer und Lautsprecher stehen nicht zur Wahl (Rückkopplung).",
+                t(
+                    "Wohin das bearbeitete Mikrofon geht. In Discord usw. dann das passende Gegenstück als \
+                     Mikrofon wählen, bei VB-Cable „CABLE Output“. Kopfhörer und Lautsprecher stehen nicht \
+                     zur Wahl (Rückkopplung).",
+                    "Where the processed microphone goes. In Discord etc. pick the matching counterpart as \
+                     your microphone, with VB-Cable that is “CABLE Output”. Headphones and speakers are not \
+                     offered (feedback).",
+                ),
             );
         });
         if refresh {
@@ -934,7 +958,7 @@ impl LaermampelApp {
         const BOTTOM_DB: f32 = -96.0;
         const MIN_HZ: f32 = 50.0;
 
-        ui.heading("Rauschen");
+        ui.heading(t("Rauschen", "Noise"));
 
         let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
         // Aus und die drei Stufen in einer Reihe: ein Klick schaltet ein und stellt zugleich ein,
@@ -942,10 +966,10 @@ impl LaermampelApp {
         ui.add_enabled_ui(rate_48k, |ui| {
             let s = &mut self.settings;
             ui.horizontal(|ui| {
-                ui.label("Störgeräusche");
+                ui.label(t("Störgeräusche", "Background noise"));
                 if ui
-                    .selectable_label(!s.denoise, "Aus")
-                    .on_hover_text("Das Mikrofon geht unbearbeitet durch.")
+                    .selectable_label(!s.denoise, t("Aus", "Off"))
+                    .on_hover_text(t("Das Mikrofon geht unbearbeitet durch.", "The microphone passes through untouched."))
                     .clicked()
                 {
                     s.denoise = false;
@@ -962,24 +986,28 @@ impl LaermampelApp {
                 egui::RichText::new(if s.denoise {
                     s.denoise_level.hint()
                 } else {
-                    "KI-Filter: nimmt alles weg, was keine Stimme ist – Tastatur, Lüfter, Straße, \
-                     Stimmen im Hintergrund. Wirkt über den Ausgang und kostet 10 ms."
+                    t(
+                        "KI-Filter: nimmt alles weg, was keine Stimme ist – Tastatur, Lüfter, Straße, \
+                         Stimmen im Hintergrund. Wirkt über den Ausgang und kostet 10 ms.",
+                        "AI filter: removes everything that is not your voice – keyboard, fans, traffic, \
+                         people talking. Works through the output and costs 10 ms.",
+                    )
                 })
                 .small()
                 .weak(),
             );
         });
         if !rate_48k {
-            ui.colored_label(RED_TEXT, "Der Filter braucht ein Mikrofon mit 48 kHz.");
+            ui.colored_label(RED_TEXT, t("Der Filter braucht ein Mikrofon mit 48 kHz.", "The filter needs a 48 kHz microphone."));
         }
         ui.separator();
 
         if let Some(total) = self.profile_total_db() {
-            ui.label(format!("Gemessenes Rauschen: {total:.0} dB"));
+            ui.label(format!("{} {total:.0} dB", t("Gemessenes Rauschen:", "Measured noise:")));
         } else if self.spectrum.profile_running() {
-            ui.label("Messe Rauschprofil, bitte nicht sprechen …");
+            ui.label(t("Messe Rauschprofil, bitte nicht sprechen …", "Measuring noise profile, please stay quiet …"));
         } else {
-            ui.label("Sei kurz still und miss dein Rauschprofil, dann siehst du es als graue Linie.");
+            ui.label(t("Sei kurz still und miss dein Rauschprofil, dann siehst du es als graue Linie.", "Stay quiet for a moment and measure your noise profile, then you see it as a grey line."));
         }
 
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 150.0), egui::Sense::hover());
@@ -1043,22 +1071,22 @@ impl LaermampelApp {
 
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.spectrum.profile_running(), egui::Button::new("Rauschprofil messen"))
-                .on_hover_text("Zwei Sekunden still sein; danach liegt dein Rauschen als graue Linie im Bild.")
+                .add_enabled(!self.spectrum.profile_running(), egui::Button::new(t("Rauschprofil messen", "Measure noise profile")))
+                .on_hover_text(t("Zwei Sekunden still sein; danach liegt dein Rauschen als graue Linie im Bild.", "Stay quiet for two seconds; your noise then shows as a grey line."))
                 .clicked()
             {
                 self.spectrum.start_profile();
             }
-            if self.spectrum.profile_db().is_some() && ui.button("Profil löschen").clicked() {
+            if self.spectrum.profile_db().is_some() && ui.button(t("Profil löschen", "Delete profile")).clicked() {
                 self.spectrum.clear_profile();
                 self.settings.noise_profile = None;
             }
         });
         ui.horizontal(|ui| {
-            ui.colored_label(strip::ACCENT, "— jetzt");
-            ui.colored_label(Color32::from_gray(170), "— Rauschprofil");
+            ui.colored_label(strip::ACCENT, t("— jetzt", "— now"));
+            ui.colored_label(Color32::from_gray(170), t("— Rauschprofil", "— noise profile"));
             if gate_on(&self.settings) {
-                ui.colored_label(Color32::from_rgb(245, 190, 20), "— Gate");
+                ui.colored_label(Color32::from_rgb(245, 190, 20), t("— Gate", "— gate"));
             }
         });
     }
@@ -1076,16 +1104,24 @@ impl LaermampelApp {
 
     fn latency_details(&self) -> String {
         let Some(total) = self.latency_ms() else {
-            return "Verzögerung entsteht erst mit einem Ausgang (VB-Cable).".to_string();
+            return t("Verzögerung entsteht erst mit einem Ausgang (VB-Cable).", "Latency only starts with an output (VB-Cable).").to_string();
         };
         let l = self.chain_control.latency();
         format!(
-            "Verzögerung {total:.0} ms: Mikrofon {:.0} ms + Puffer {:.0} ms + Ausgabe {:.0} ms + Rauschfilter {:.0} ms.\n\
-             Kleiner geht über ⚙ → Feineinstellungen → Puffer.",
+            "{} {total:.0} ms: {} {:.0} ms + {} {:.0} ms + {} {:.0} ms + {} {:.0} ms.\n{}",
+            t("Verzögerung", "Latency"),
+            t("Mikrofon", "microphone"),
             l.input_ms,
+            t("Puffer", "buffer"),
             l.buffer_ms,
+            t("Ausgabe", "output"),
             l.output_ms,
-            self.denoise_ms()
+            t("Geräuschfilter", "noise filter"),
+            self.denoise_ms(),
+            t(
+                "Kleiner geht über ⚙ → Kanalzug → Puffer.",
+                "For less, use ⚙ → channel strip → buffer.",
+            )
         )
     }
 
@@ -1099,23 +1135,25 @@ impl LaermampelApp {
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
-        if output_error.as_deref() == Some(agc::VB_CABLE_MISSING) {
-            ui.label(
+        if output_error.as_deref() == Some(agc::vb_cable_missing()) {
+            ui.label(t(
                 "VB-Cable ist nicht installiert. Gate und Mute gehen auch ohne; Comp., Fader und Limiter \
                  wirken in anderen Programmen nur mit VB-Cable.",
-            );
-            ui.hyperlink_to("VB-Cable herunterladen", agc::VB_CABLE_URL);
+                "VB-Cable is not installed. Gate and mute work without it; comp., fader and limiter only \
+                 reach other programs with VB-Cable.",
+            ));
+            ui.hyperlink_to(t("VB-Cable herunterladen", "Download VB-Cable"), agc::VB_CABLE_URL);
         } else if let Some(err) = &output_error {
             ui.colored_label(RED_TEXT, err);
         } else if output_name.is_some() {
-            ui.label("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.");
+            ui.label(t("In Discord, Spielen usw. als Mikrofon „CABLE Output“ wählen.", "In Discord, games etc. pick “CABLE Output” as your microphone."));
         }
 
         ui.label(self.latency_details());
         let mut buffer_ms = self.settings.buffer_ms;
         let slider = ui
-            .add(egui::Slider::new(&mut buffer_ms, 5.0..=60.0).text("Puffer").suffix(" ms"))
-            .on_hover_text("Kleiner heißt weniger Verzögerung, aber mehr Risiko für Aussetzer. Wirkt nach Neustart der Ausgabe.");
+            .add(egui::Slider::new(&mut buffer_ms, 5.0..=60.0).text(t("Puffer", "Buffer")).suffix(" ms"))
+            .on_hover_text(t("Kleiner heißt weniger Verzögerung, aber mehr Risiko für Aussetzer. Wirkt nach Neustart der Ausgabe.", "Smaller means less latency but more risk of dropouts. Applies after the output restarts."));
         self.settings.buffer_ms = buffer_ms;
         // Neu starten, sobald der Wert feststeht: nach dem Ziehen, aber auch nach einer Eingabe
         // über die Tastatur (sonst stand da ein Wert, der gar nicht wirkte).
@@ -1125,34 +1163,34 @@ impl LaermampelApp {
 
         let s = &mut self.settings;
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Gate").strong());
-        ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text("Absenkung").suffix(" dB"))
-            .on_hover_text("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.");
-        ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text("Öffnen").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text("Halten").suffix(" ms"))
-            .on_hover_text("So lange bleibt es nach dem letzten Wort offen.");
-        ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text("Schließen").suffix(" ms"));
+        ui.label(egui::RichText::new(t("Gate", "Gate")).strong());
+        ui.add(egui::Slider::new(&mut s.gate_range_db, 0.0..=80.0).text(t("Absenkung", "Range")).suffix(" dB"))
+            .on_hover_text(t("Wie viel leiser, wenn zu. 80 dB ist praktisch stumm, 10–20 dB klingt natürlicher.", "How much quieter when closed. 80 dB is practically muted, 10–20 dB sounds more natural."));
+        ui.add(egui::Slider::new(&mut s.gate_attack_ms, 0.5..=50.0).text(t("Öffnen", "Attack")).suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.gate_hold_ms, 0.0..=2000.0).text(t("Halten", "Hold")).suffix(" ms"))
+            .on_hover_text(t("So lange bleibt es nach dem letzten Wort offen.", "Stays open this long after your last word."));
+        ui.add(egui::Slider::new(&mut s.gate_release_ms, 10.0..=1000.0).text(t("Schließen", "Release")).suffix(" ms"));
 
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Ampel und Ton").strong());
+        ui.label(egui::RichText::new(t("Ampel und Ton", "Indicator and beep")).strong());
         ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text("Ton-Lautstärke"));
-            if ui.button("Testen").clicked() {
+            ui.add(egui::Slider::new(&mut s.beep_volume, 0.0..=1.0).text(t("Ton-Lautstärke", "Beep volume")));
+            if ui.button(t("Testen", "Test")).clicked() {
                 beep::play(s.beep_volume);
             }
         });
-        ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text("Anstieg").suffix(" ms"))
-            .on_hover_text("Wie schnell die Ampel auf lautere Stimme reagiert");
-        ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text("Abklingen").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text("Gelb/Rot halten").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.attack_ms, 0.0..=500.0).text(t("Anstieg", "Rise")).suffix(" ms"))
+            .on_hover_text(t("Wie schnell die Ampel auf lautere Stimme reagiert", "How quickly the indicator reacts to a louder voice"));
+        ui.add(egui::Slider::new(&mut s.release_ms, 0.0..=3000.0).text(t("Abklingen", "Fall")).suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.hold_ms, 0.0..=5000.0).text(t("Gelb/Rot halten", "Hold yellow/red")).suffix(" ms"));
 
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Comp.").strong());
-        ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text("Ziellautstärke").suffix(" dB"));
-        ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text("Runterregeln").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text("Hochregeln").suffix(" ms"));
-        ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text("Pause unter").suffix(" dB"))
-            .on_hover_text("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen");
+        ui.add(egui::Slider::new(&mut s.agc_target_db, -40.0..=-6.0).text(t("Ziellautstärke", "Target level")).suffix(" dB"));
+        ui.add(egui::Slider::new(&mut s.agc_attack_ms, 5.0..=500.0).text(t("Runterregeln", "Turn down")).suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.agc_release_ms, 100.0..=5000.0).text(t("Hochregeln", "Turn up")).suffix(" ms"));
+        ui.add(egui::Slider::new(&mut s.agc_gate_db, -80.0..=-20.0).text(t("Pause unter", "Pause below")).suffix(" dB"))
+            .on_hover_text(t("Leiser als das gilt als Sprechpause, dann wird nichts hochgezogen", "Quieter than this counts as a pause, nothing is pulled up then"));
 
 
 
@@ -1185,8 +1223,8 @@ impl LaermampelApp {
             ApoJob::Idle => {}
         }
         if installed {
-            ui.label("Aus einer älteren Version ist noch ein Mikrofon-Filter eingetragen.");
-            if ui.button("Entfernen").clicked() {
+            ui.label(t("Aus einer älteren Version ist noch ein Mikrofon-Filter eingetragen.", "A microphone filter from an older version is still registered."));
+            if ui.button(t("Entfernen", "Remove")).clicked() {
                 self.start_apo_job("Entferne Filter, der Ton ist kurz weg …", "--apo uninstall-all".to_string());
             }
         }
@@ -1218,13 +1256,23 @@ impl LaermampelApp {
     }
 
     fn general_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(t("Sprache", "Language"));
+            for language in Language::ALL {
+                if ui.selectable_label(self.settings.language == language, language.label()).clicked() {
+                    self.settings.language = language;
+                    lang::apply(language);
+                }
+            }
+        });
+        ui.separator();
         self.version_ui(ui);
 
 
         ui.separator();
-        egui::CollapsingHeader::new("Kanalzug: Ausgabe und Feineinstellungen")
+        egui::CollapsingHeader::new(t("Kanalzug: Ausgabe und Feineinstellungen", "Channel strip: output and fine tuning"))
             .id_salt("strip_details")
-            .default_open(self.meter.as_ref().and_then(|m| m.agc_error.as_deref()).is_some_and(|e| e != agc::VB_CABLE_MISSING))
+            .default_open(self.meter.as_ref().and_then(|m| m.agc_error.as_deref()).is_some_and(|e| e != agc::vb_cable_missing()))
             .show(ui, |ui| self.channel_details_ui(ui));
 
         #[cfg(windows)]
@@ -1233,7 +1281,7 @@ impl LaermampelApp {
         if autostart::SUPPORTED {
             ui.separator();
             let mut enabled = self.autostart_enabled;
-            if ui.checkbox(&mut enabled, "Mit Windows starten").changed() {
+            if ui.checkbox(&mut enabled, t("Mit Windows starten", "Start with Windows")).changed() {
                 match autostart::set_enabled(enabled) {
                     Ok(()) => {
                         self.autostart_enabled = enabled;
@@ -1248,8 +1296,8 @@ impl LaermampelApp {
         }
 
         ui.separator();
-        ui.label(format!("Rot seit Programmstart: {}×", self.red_count));
-        if ui.button("Lärmampel beenden").clicked() {
+        ui.label(format!("{} {}×", t("Rot seit Programmstart:", "Red since start:"), self.red_count));
+        if ui.button(t("Lärmampel beenden", "Quit Lärmampel")).clicked() {
             ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
