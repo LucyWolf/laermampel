@@ -88,7 +88,10 @@ pub struct LaermampelApp {
     output_devices: Vec<InputDevice>,
     chain_control: Arc<ChainControl>,
 
+    /// Die Anzeige selbst: was hinten rauskommt. Genau dieselbe Zahl zeigt der Kanalzug.
     level: Level,
+    /// Nur zum Ablesen: die Stimme vor der Bearbeitung (zum Einstellen des Gates).
+    voice: Level,
     last_tick: Instant,
     red_count: u32,
 
@@ -146,6 +149,7 @@ impl LaermampelApp {
             output_devices: agc::list_output_devices(),
             chain_control: Arc::new(ChainControl::default()),
             level: Level::new(),
+            voice: Level::new(),
             last_tick: Instant::now(),
             red_count: 0,
             monitors: placement::monitors(),
@@ -243,6 +247,7 @@ impl LaermampelApp {
         ChainSettings {
             denoise: self.denoise_active(),
             denoise_dry: self.settings.denoise_level.dry(),
+            denoise_duck_db: self.settings.denoise_level.duck_db(),
             gate: GateSettings {
                 enabled: gate_on(s),
                 threshold_db: s.gate_threshold_db,
@@ -620,26 +625,16 @@ impl LaermampelApp {
         let mut refresh_devices = false;
 
         let running = output_name.is_some();
-        let voice_db = if self.meter.is_some() { self.level.display_db } else { -120.0 };
-        // Werte vom Filter, sonst vom VB-Cable-Weg; ohne beides wird gar nicht bearbeitet.
+        // Dieselbe Zahl wie Punkt und Leiste auf dem Bildschirm, in logic() ausgerechnet.
+        let meter_db = self.level.display_db;
+        // Die Stimme vor der Bearbeitung, nur zum Ablesen und zum Einstellen des Gates.
+        let voice_db = if self.meter.is_some() { self.voice.display_db } else { -120.0 };
         let feedback = running.then(|| self.chain_control.feedback());
-        let volume_gating = feedback.is_none() && gate_on(&self.settings);
         let gate_open = gate_on(&self.settings)
             && match feedback {
                 Some(f) => f.gate_open,
                 None => self.volume_gate.is_open(),
             };
-        // Anzeige wie beim Mischpult: was nach der Bearbeitung übrig bleibt. Nur bei Mute grau die Stimme.
-        let meter_db = if self.settings.mic_muted {
-            voice_db
-        } else if let Some(f) = feedback {
-            f.out_level_db
-        } else if volume_gating {
-            // Wie bei Voicemeeter: je höher das Gate, desto weniger Ausschlag.
-            voice_db - self.volume_gate.reduction_db()
-        } else {
-            voice_db
-        };
         let s = &self.settings;
         // Gate und Mute gehen notfalls über den Windows-Regler; Comp., Fader und Limiter nur mit VB-Cable.
         // Was davon ohne VB-Cable nicht wirkt, beim Namen nennen.
@@ -821,7 +816,7 @@ impl LaermampelApp {
             });
 
             // Genauer Wert zum Ablesen, z.B. um die Gate-Schwelle passend zu setzen.
-            let level = if voice_db > -99.5 { format!("Pegel {voice_db:.0} dB") } else { "Pegel –".to_string() };
+                let level = if voice_db > -99.5 { format!("Stimme {voice_db:.0} dB") } else { "Stimme –".to_string() };
             let reading = match self.latency_ms() {
                 Some(ms) => format!("{level} · {ms:.0} ms"),
                 None => level,
@@ -1303,7 +1298,22 @@ impl eframe::App for LaermampelApp {
         // Ohne Mikrofon fällt die Anzeige auf Stille zurück, statt auf dem letzten Wert
         // stehen zu bleiben (sonst leuchtet der Punkt nach dem Abstecken ewig rot).
         let input = input.or_else(|| self.meter.is_none().then_some(audio::SILENCE_DB));
-        let became_red = self.level.update(input, dt, now, &self.settings);
+        self.voice.update(input, dt, now, &self.settings);
+
+        // Was am Ausgang ankommt. Punkt, Leiste und der Balken im Kanalzug zeigen alle diese
+        // eine Zahl, sonst stehen dieselbe Stimme in zwei Anzeigen an verschiedenen Stellen.
+        let out_db = if self.settings.mic_muted {
+            // Stumm: der Ausschlag bleibt sichtbar (nur ausgegraut), sonst sieht man nichts mehr.
+            input
+        } else if chain_running {
+            Some(self.chain_control.feedback().out_level_db)
+        } else if gate_on(&self.settings) {
+            // Ohne Ausgang senkt das Gate über den Windows-Regler ab; das zeigen wir genauso.
+            input.map(|db| db - self.volume_gate.reduction_db())
+        } else {
+            input
+        };
+        let became_red = self.level.update(out_db, dt, now, &self.settings);
         // Stumm hört dich niemand: dann auch kein Warnton und kein Zähler.
         if became_red && !self.settings.mic_muted {
             self.red_count += 1;

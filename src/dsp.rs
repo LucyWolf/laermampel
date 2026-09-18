@@ -10,6 +10,13 @@ const PEAK_DECAY_DB_PER_SECOND: f32 = 10.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
 /// Fader und Mute weich überblenden, sonst knackt es.
 const FADER_SMOOTHING_MS: f32 = 10.0;
+/// Ab dieser Sprachwahrscheinlichkeit gilt es als Stimme und es wird nicht abgesenkt.
+const VAD_SPEECH: f32 = 0.6;
+/// Darunter ist es sicher keine Stimme und die volle Absenkung greift.
+const VAD_NOISE: f32 = 0.1;
+/// Zurück auf volle Lautstärke schnell (kein abgeschnittenes erstes Wort), absenken langsam.
+const DUCK_OPEN_MS: f32 = 4.0;
+const DUCK_CLOSE_MS: f32 = 150.0;
 const METER_WINDOW_MS: f32 = 50.0;
 /// Sprachbereich für die Pegelmessung. Beide Anzeigen (Ampel und Kanalzug) messen damit
 /// dasselbe: ohne diesen Filter zählt Brummen unter 100 Hz mit und der Kanalzug stünde
@@ -117,6 +124,11 @@ pub struct CompSettings {
 pub struct Settings {
     /// Rauschfilter (RNNoise). Braucht 48 kHz, sonst wird er übersprungen.
     pub denoise: bool,
+    /// Zusätzliche Absenkung in Sprechpausen, gesteuert vom Netz selbst (0 = aus).
+    /// Dafür sorgt der Filter beim Sprechen weiter allein; erst wenn er keine Stimme
+    /// erkennt, wird zusätzlich leiser gemacht. So verschwindet auch lauter Krach
+    /// (Bohrmaschine, Lüfter), während die Stimme unangetastet bleibt.
+    pub denoise_duck_db: f32,
     /// Wie viel vom ungefilterten Ton stehen bleibt (0 = voll gefiltert, 0.32 = höchstens
     /// 10 dB leiser). Damit gibt es Stufen: etwas Restrauschen klingt natürlicher als ein
     /// Filter, der in Sprechpausen alles totmacht.
@@ -134,6 +146,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             denoise: false,
+            denoise_duck_db: 0.0,
             denoise_dry: 0.0,
             gate: GateSettings { enabled: false, threshold_db: -45.0, range_db: 40.0, attack_ms: 2.0, hold_ms: 250.0, release_ms: 150.0 },
             comp: CompSettings {
@@ -322,6 +335,8 @@ struct Denoiser {
     /// Das unbearbeitete Signal, um dieselben 10 ms verzögert wie das gefilterte.
     /// Ohne diese Verzögerung würde das Beimischen den Ton verschmieren.
     dry: std::collections::VecDeque<f32>,
+    /// Wie sicher das Netz beim letzten Block Sprache gehört hat (0 bis 1).
+    vad: f32,
 }
 
 impl Denoiser {
@@ -333,6 +348,7 @@ impl Denoiser {
             output: vec![0.0; frame],
             ready: std::collections::VecDeque::with_capacity(frame * 2),
             dry: std::collections::VecDeque::with_capacity(frame * 2),
+            vad: 1.0,
         }
     }
 
@@ -349,7 +365,7 @@ impl Denoiser {
     fn process(&mut self, x: f32, dry_mix: f32) -> f32 {
         self.input.push(x * 32768.0);
         if self.input.len() == nnnoiseless::DenoiseState::FRAME_SIZE {
-            self.state.process_frame(&mut self.output, &self.input);
+            self.vad = self.state.process_frame(&mut self.output, &self.input);
             self.input.clear();
             for &y in &self.output {
                 self.ready.push_back(y / 32768.0);
@@ -383,6 +399,11 @@ pub struct Chain {
     fader_k: f32,
     fader_gain: f32,
 
+    /// Aktuelle Absenkung in Sprechpausen und wie schnell sie sich bewegt.
+    duck_db: f32,
+    duck_open_k: f32,
+    duck_close_k: f32,
+
     meter_k: f32,
     meter_hp: Biquad,
     meter_lp: Biquad,
@@ -401,6 +422,9 @@ impl Chain {
             ceiling: 1.0,
             fader_k: smoothing(FADER_SMOOTHING_MS, sample_rate),
             fader_gain: 1.0,
+            duck_db: 0.0,
+            duck_open_k: smoothing(DUCK_OPEN_MS, sample_rate),
+            duck_close_k: smoothing(DUCK_CLOSE_MS, sample_rate),
             meter_k: smoothing(METER_WINDOW_MS, sample_rate),
             meter_hp: Biquad::highpass(sample_rate, METER_HIGHPASS_HZ),
             meter_lp: Biquad::lowpass(sample_rate, METER_LOWPASS_HZ.min(sample_rate * 0.45)),
@@ -440,6 +464,13 @@ impl Chain {
             && let Some(denoiser) = &mut self.denoiser
         {
             mono = denoiser.process(mono, self.settings.denoise_dry);
+            // Erkennt das Netz keine Stimme, zusätzlich absenken. Zwischen den beiden
+            // Schwellen wird gleitend übergeblendet, sonst pumpt es hörbar.
+            let speech = ((denoiser.vad - VAD_NOISE) / (VAD_SPEECH - VAD_NOISE)).clamp(0.0, 1.0);
+            let target = self.settings.denoise_duck_db.max(0.0) * (1.0 - speech);
+            let k = if target < self.duck_db { self.duck_open_k } else { self.duck_close_k };
+            self.duck_db += (target - self.duck_db) * k;
+            mono *= db_to_gain(-self.duck_db);
             frame.fill(mono);
         }
 
@@ -610,21 +641,26 @@ mod tests {
 
     #[test]
     fn rauschfilter_hat_drei_stufen() {
-        let weggenommen = |dry: f32| {
+        let weggenommen = |dry: f32, duck_db: f32| {
             let mut chain = Chain::new(RATE);
             let mut s = Settings::default();
             s.denoise = true;
             s.denoise_dry = dry;
+            s.denoise_duck_db = duck_db;
             chain.set(s);
             let input = noise(RATE as usize * 3, 0.05);
             let out = run(&mut chain, &input);
             tail_rms(&input) - tail_rms(&out)
         };
-        // Werte aus settings::DenoiseLevel: leicht, medium, stark.
-        let (leicht, medium, stark) = (weggenommen(0.32), weggenommen(0.10), weggenommen(0.0));
+        // Werte aus settings::DenoiseLevel.
+        let leicht = weggenommen(0.32, 0.0);
+        let medium = weggenommen(0.10, 18.0);
+        let stark = weggenommen(0.0, 40.0);
         assert!(leicht < medium && medium < stark, "Stufen: {leicht:.1} / {medium:.1} / {stark:.1} dB");
         assert!(leicht < 11.0, "„Leicht“ soll höchstens 10 dB wegnehmen, nimmt aber {leicht:.1} dB");
-        assert!(medium < 21.0, "„Medium“ soll höchstens 20 dB wegnehmen, nimmt aber {medium:.1} dB");
+        // Medium und Stark senken Dauerkrach zusätzlich ab, sobald keine Stimme erkannt wird.
+        assert!(medium > 20.0, "„Medium“ nimmt nur {medium:.1} dB weg");
+        assert!(stark > 35.0, "„Stark“ nimmt nur {stark:.1} dB weg");
     }
 
     #[test]
