@@ -326,15 +326,24 @@ impl Limiter {
     }
 }
 
-/// Rauschfilter auf Sprache trainiert (RNNoise). Arbeitet in Blöcken von 10 ms bei 48 kHz,
-/// das Signal kommt also um einen Block verzögert heraus.
+/// Rauschfilter auf Sprache trainiert (RNNoise). Arbeitet in Blöcken von 10 ms bei 48 kHz.
+///
+/// Heraus kommt das Signal um **zwei** Blöcke verzögert (20 ms): einen sammelt diese Stufe,
+/// bevor überhaupt gerechnet wird, und einen hält RNNoise selbst zurück, weil es seine
+/// Fenster überlappend zusammensetzt. Nachgemessen mit einem Impuls (siehe Tests).
+/// Um so viele Samples muss der Trockenweg warten, damit er zum gefilterten Signal passt.
+/// Ein Block sammelt diese Stufe selbst, einen hält RNNoise zurück – zusammen 20 ms.
+/// Stand hier nur ein Block, lagen beim Beimischen zwei um 10 ms versetzte Signale
+/// übereinander: die Stimme verlor rund 5 dB und klang verschmiert.
+const DRY_DELAY: usize = 2 * nnnoiseless::DenoiseState::FRAME_SIZE;
+
 struct Denoiser {
     state: Box<nnnoiseless::DenoiseState<'static>>,
     input: Vec<f32>,
     output: Vec<f32>,
     /// Fertige, noch nicht abgeholte Samples.
     ready: std::collections::VecDeque<f32>,
-    /// Das unbearbeitete Signal, um dieselben 10 ms verzögert wie das gefilterte.
+    /// Das unbearbeitete Signal, um dieselbe Zeit verzögert wie das gefilterte.
     /// Ohne diese Verzögerung würde das Beimischen den Ton verschmieren.
     dry: std::collections::VecDeque<f32>,
     /// Wie sicher das Netz beim letzten Block Sprache gehört hat (0 bis 1).
@@ -349,7 +358,7 @@ impl Denoiser {
             input: Vec::with_capacity(frame),
             output: vec![0.0; frame],
             ready: std::collections::VecDeque::with_capacity(frame * 2),
-            dry: std::collections::VecDeque::with_capacity(frame * 2),
+            dry: std::collections::VecDeque::with_capacity(DRY_DELAY + 1),
             vad: 1.0,
         }
     }
@@ -374,13 +383,9 @@ impl Denoiser {
             }
         }
         self.dry.push_back(x);
-        // Bis der erste Block fertig ist, kommt Stille heraus (10 ms).
+        // Bis der erste Block fertig ist, kommt Stille heraus.
         let wet = self.ready.pop_front().unwrap_or(0.0);
-        let dry = if self.dry.len() > nnnoiseless::DenoiseState::FRAME_SIZE {
-            self.dry.pop_front().unwrap_or(0.0)
-        } else {
-            0.0
-        };
+        let dry = if self.dry.len() >= DRY_DELAY { self.dry.pop_front().unwrap_or(0.0) } else { 0.0 };
         // Überblendung statt Addition: bei Sprache sind beide gleich, die Lautstärke
         // bleibt also stehen; in Pausen bestimmt `dry_mix`, wie viel Rauschen übrig ist.
         wet + (dry - wet) * dry_mix.clamp(0.0, 1.0)
@@ -613,6 +618,92 @@ mod tests {
                 ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level
             })
             .collect()
+    }
+
+    /// Zwei-Pol-Resonator, reicht als Formant für ein künstliches „ah“.
+    struct Formant {
+        cos: f32,
+        r: f32,
+        y1: f32,
+        y2: f32,
+    }
+
+    impl Formant {
+        fn new(freq: f32, bandwidth: f32) -> Self {
+            let r = (-std::f32::consts::PI * bandwidth / RATE).exp();
+            Formant { cos: (2.0 * std::f32::consts::PI * freq / RATE).cos(), r, y1: 0.0, y2: 0.0 }
+        }
+
+        fn run(&mut self, x: f32) -> f32 {
+            let y = x + 2.0 * self.r * self.cos * self.y1 - self.r * self.r * self.y2;
+            self.y2 = self.y1;
+            self.y1 = y;
+            y
+        }
+    }
+
+    /// Grob wie ein gesprochener Vokal: Impulsfolge auf Grundfrequenz, durch drei Formanten
+    /// gefiltert, dazu eine Silbenhüllkurve. Kein echtes Sprachsignal, aber nah genug dran,
+    /// dass die Sprach-Erkennung von RNNoise darauf anspringen sollte.
+    fn vowel(n: usize, ziel_db: f32) -> Vec<f32> {
+        let f0 = 110.0;
+        let period = (RATE / f0) as usize;
+        let mut formants = [Formant::new(700.0, 80.0), Formant::new(1220.0, 90.0), Formant::new(2600.0, 120.0)];
+        let mut raw: Vec<f32> = (0..n)
+            .map(|i| {
+                let pulse = if i % period == 0 { 1.0 } else { 0.0 };
+                let mut sum = 0.0;
+                for (weight, f) in [1.0, 0.5, 0.25].iter().zip(formants.iter_mut()) {
+                    sum += weight * f.run(pulse);
+                }
+                // Silben: viermal pro Sekunde lauter und leiser, aber nie ganz weg.
+                let syllable = 0.55 + 0.45 * (2.0 * std::f32::consts::PI * 4.0 * i as f32 / RATE).sin();
+                sum * syllable
+            })
+            .collect();
+        let current = rms_db(&raw);
+        let gain = db_to_gain(ziel_db - current);
+        for x in &mut raw {
+            *x *= gain;
+        }
+        raw
+    }
+
+    /// Der Trockenweg muss genau so lange warten wie das gefilterte Signal. Lag er davor,
+    /// mischten sich beim Beimischen zwei versetzte Signale und die Stimme verlor rund 5 dB.
+    #[test]
+    fn trockenweg_liegt_auf_dem_gefilterten() {
+        let frame = nnnoiseless::DenoiseState::FRAME_SIZE;
+        // Impuls hinein, schauen wo er wieder herauskommt: einmal gefiltert, einmal trocken.
+        let spitze = |dry_mix: f32| {
+            let mut d = Denoiser::new();
+            let out: Vec<f32> = (0..frame * 6).map(|i| d.process(if i == 0 { 1.0 } else { 0.0 }, dry_mix)).collect();
+            out.iter()
+                .enumerate()
+                .fold((0, 0.0f32), |(bi, bv), (i, &v)| if v.abs() > bv { (i, v.abs()) } else { (bi, bv) })
+                .0
+        };
+        assert_eq!(spitze(0.0), spitze(1.0), "gefiltert und trocken kommen zu verschiedenen Zeiten heraus");
+    }
+
+    /// Der Filter darf Rauschen wegnehmen, aber nicht die Stimme. Ohne diesen Test fiel
+    /// nicht auf, dass „Leicht“ rund 5 dB der Stimme verschluckte.
+    #[test]
+    fn stimme_ueberlebt_den_filter() {
+        // Werte aus settings::DenoiseLevel.
+        for (stufe, dry, duck, vad) in [("Leicht", 0.32, 0.0, 0.6), ("Medium", 0.0, 40.0, 0.6), ("Stark", 0.0, 60.0, 0.85)] {
+            let mut chain = Chain::new(RATE);
+            let mut s = Settings::default();
+            s.denoise = true;
+            s.denoise_dry = dry;
+            s.denoise_duck_db = duck;
+            s.denoise_speech_vad = vad;
+            chain.set(s);
+            let input = vowel(RATE as usize * 3, -20.0);
+            let out = run(&mut chain, &input);
+            let verlust = tail_rms(&input) - tail_rms(&out);
+            assert!(verlust < 1.5, "„{stufe}“ nimmt der Stimme {verlust:.1} dB weg");
+        }
     }
 
     #[test]
