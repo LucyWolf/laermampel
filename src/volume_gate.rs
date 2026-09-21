@@ -47,6 +47,63 @@ const TEST_INTERVAL: Duration = Duration::from_secs(30);
 const TEST_STEADY_DB: f32 = 2.0;
 const TEST_STEADY_FOR: Duration = Duration::from_millis(400);
 
+/// Sieht regelmäßig nach, ob *Windows* das Mikrofon stumm meldet.
+///
+/// Das ist etwas anderes als der Mute-Knopf der Lärmampel und etwas anderes als eine Taste,
+/// die im Headset selbst schaltet: Von der erfährt Windows nichts. Erst der Vergleich
+/// beider Angaben sagt, wer stummgeschaltet hat.
+#[derive(Default)]
+pub struct MuteWatch {
+    #[cfg(windows)]
+    volume: Option<win::Volume>,
+    endpoint_id: Option<String>,
+    last_look: Option<Instant>,
+    muted: bool,
+}
+
+/// So oft wird nachgesehen; öfter lohnt nicht, es ist ein COM-Aufruf.
+const MUTE_LOOK_INTERVAL: Duration = Duration::from_millis(400);
+
+impl MuteWatch {
+    /// `device_id` ist die cpal-ID des gewählten Mikrofons. Gibt zurück, ob Windows es
+    /// gerade stumm meldet.
+    pub fn update(&mut self, device_id: Option<&str>) -> bool {
+        let endpoint_id = device_id.and_then(|id| id.strip_prefix("wasapi:")).map(str::to_string);
+        if endpoint_id != self.endpoint_id {
+            self.endpoint_id = endpoint_id;
+            #[cfg(windows)]
+            {
+                self.volume = None;
+            }
+            self.muted = false;
+            self.last_look = None;
+        }
+        if self.last_look.is_some_and(|t| t.elapsed() < MUTE_LOOK_INTERVAL) {
+            return self.muted;
+        }
+        self.last_look = Some(Instant::now());
+        #[cfg(windows)]
+        {
+            if self.volume.is_none()
+                && let Some(id) = &self.endpoint_id
+            {
+                self.volume = win::Volume::open(id);
+            }
+            if let Some(volume) = &self.volume {
+                match volume.get_mute() {
+                    Some(m) => self.muted = m,
+                    // Gerät weg: beim nächsten Mal neu aufmachen.
+                    None => {
+                        self.volume = None;
+                        self.muted = false;
+                    }
+                }
+            }
+        }
+        self.muted
+    }
+}
+
 pub struct GateParams {
     pub threshold_db: f32,
     pub range_db: f32,
@@ -585,6 +642,11 @@ mod win {
 
         pub fn get_db(&self) -> Option<f32> {
             unsafe { self.endpoint.GetMasterVolumeLevel().ok() }
+        }
+
+        /// Ob Windows das Mikrofon gerade stumm meldet (Sound-Einstellungen, manche Headset-Tasten).
+        pub fn get_mute(&self) -> Option<bool> {
+            unsafe { self.endpoint.GetMute().ok().map(|m| m.as_bool()) }
         }
 
         pub fn set_mute(&self, mute: bool) {
