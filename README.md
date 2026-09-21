@@ -73,7 +73,7 @@ Einrichten:
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
 Unter dem Kanalzug steht neben dem Pegel die **Verzögerung in ms** (nur mit Ausgang). Beim Überfahren
-steht, woraus sie besteht: Mikrofon-Block + Puffer + Ausgabe-Block + Rauschfilter (10 ms). Den Puffer
+steht, woraus sie besteht: Mikrofon-Block + Puffer + Ausgabe-Block + Rauschfilter (20 ms). Den Puffer
 stellst du unter ⚙ → Feineinstellungen ein (5–60 ms): kleiner heißt weniger Verzögerung, aber mehr
 Risiko für Aussetzer.
 

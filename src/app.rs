@@ -1195,7 +1195,8 @@ impl LaermampelApp {
 
     /// RNNoise arbeitet in Blöcken von 10 ms.
     fn denoise_ms(&self) -> f32 {
-        if self.denoise_active() { 10.0 } else { 0.0 }
+        // Ein Block sammeln, einen hält RNNoise zurück: zusammen 20 ms (nachgemessen).
+        if self.denoise_active() { 20.0 } else { 0.0 }
     }
 
     fn latency_details(&self) -> String {
