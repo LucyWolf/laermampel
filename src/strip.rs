@@ -35,7 +35,11 @@ fn knob_range(ui: &mut Ui, value: &mut f32, min: f32, max: f32, step: f32, text:
     if response.dragged() {
         raw -= response.drag_delta().y * span / 150.0;
     }
-    if response.hovered() {
+    // Nur wenn das Fenster auch vorn ist: Windows schickt das Mausrad an das Fenster unter
+    // dem Zeiger, selbst wenn man gerade in einem anderen Programm scrollt („Inaktive Fenster
+    // beim Daraufzeigen scrollen“ ist ab Werk an). Ohne diese Abfrage verstellt ein Dreh am
+    // Rad das Mikrofon, ohne dass man es merkt – und hinterher weiß niemand, warum.
+    if response.hovered() && ui.input(|i| i.focused) {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         raw += scroll / 40.0 * span / 20.0;
     }
@@ -103,7 +107,8 @@ pub fn fader(ui: &mut Ui, value: &mut f32, min: f32, max: f32, height: f32) -> R
     {
         raw = min + (bottom - pos.y) / (bottom - top) * (max - min);
     }
-    if response.hovered() {
+    // Siehe `knob_range`: sonst verstellt das Mausrad den Fader, während man woanders scrollt.
+    if response.hovered() && ui.input(|i| i.focused) {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         raw += scroll / 40.0;
     }

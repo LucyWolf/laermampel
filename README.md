@@ -69,7 +69,9 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - Der **Fader** verstellt ohne Ausgang den Mikrofon-Regler von Windows. Der hat einen festen Bereich: steht er
   schon am Anschlag, kommt ein Aufdrehen nicht mehr an. Das Überfahren des Faders sagt, wie viele dB gerade
   verloren gehen – weiter hoch geht es dann nur mit VB-Cable als Ausgang.
-- Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
+- Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Das Mausrad wirkt nur, wenn das Fenster
+  auch vorn ist – sonst würde Windows („Inaktive Fenster beim Daraufzeigen scrollen“) beim Scrollen in einem
+  anderen Programm dein Mikrofon verstellen. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:
 
