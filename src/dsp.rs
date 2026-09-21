@@ -708,6 +708,37 @@ mod tests {
 
     /// Auf „aus“ muss das Gate wirklich nichts tun – wer sich auf die Störfilter verlässt,
     /// stellt es ganz nach links und darf dann keinen Unterschied hören.
+    /// Der Gain-Fader muss genau das tun, was draufsteht – am Ausgang und in der Anzeige.
+    /// Mit VB-Cable rechnet die Lärmampel selbst; dann hängt nichts mehr an Windows.
+    #[test]
+    fn fader_kommt_am_ausgang_an() {
+        for fader in [-20.0, 0.0, 6.0, 11.0] {
+            let mut chain = Chain::new(RATE);
+            let mut s = Settings::default();
+            s.fader_db = fader;
+            chain.set(s);
+            let out = run(&mut chain, &sine(RATE as usize * 2, -30.0));
+            let erwartet = -30.0 + fader;
+            assert!((tail_rms(&out) - erwartet).abs() < 0.5, "Fader {fader:+.0}: Ausgang {:.1} statt {erwartet:.1} dB", tail_rms(&out));
+            assert!((chain.out_level_db() - erwartet).abs() < 0.5, "Fader {fader:+.0}: Anzeige {:.1} statt {erwartet:.1} dB", chain.out_level_db());
+        }
+    }
+
+    /// Die automatische Lautstärke regelt auf ihr Ziel, der Fader kommt danach: beides
+    /// zusammen darf sich nicht gegenseitig aufheben.
+    #[test]
+    fn comp_frisst_den_fader_nicht() {
+        let mit = |fader: f32| {
+            let mut chain = Chain::new(RATE);
+            let mut s = comp_settings();
+            s.fader_db = fader;
+            chain.set(s);
+            tail_rms(&run(&mut chain, &sine(RATE as usize * 10, -30.0)))
+        };
+        let unterschied = mit(11.0) - mit(0.0);
+        assert!((unterschied - 11.0).abs() < 0.5, "Fader bringt mit Comp. nur {unterschied:.1} dB");
+    }
+
     #[test]
     fn gate_aus_laesst_alles_durch() {
         let input = vowel(RATE as usize, -20.0);

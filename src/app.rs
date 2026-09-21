@@ -293,7 +293,7 @@ impl LaermampelApp {
 
 
 
-    /// Pegel mitschreiben und das Grundrauschen schätzen (leisestes Zehntel der letzten 30 s).
+    /// Farbe, die gerade gezeigt wird – bei der Vorschau immer Rot.
     fn shown_zone(&self) -> Zone {
         if self.preview_until.is_some_and(|t| Instant::now() < t) {
             Zone::Red
