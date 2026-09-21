@@ -1110,9 +1110,9 @@ impl LaermampelApp {
                 } else {
                     t(
                         "KI-Filter: nimmt alles weg, was keine Stimme ist – Tastatur, Lüfter, Straße, \
-                         Stimmen im Hintergrund. Wirkt über den Ausgang und kostet 10 ms.",
+                         Stimmen im Hintergrund. Wirkt über den Ausgang und kostet 20 ms.",
                         "AI filter: removes everything that is not your voice – keyboard, fans, traffic, \
-                         people talking. Works through the output and costs 10 ms.",
+                         people talking. Works through the output and costs 20 ms.",
                     )
                 })
                 .small()
@@ -1121,6 +1121,41 @@ impl LaermampelApp {
         });
         if !rate_48k {
             ui.colored_label(RED_TEXT, t("Der Filter braucht ein Mikrofon mit 48 kHz.", "The filter needs a 48 kHz microphone."));
+        }
+
+        // Live mitlesen, wofür der Filter das gerade hält. Nur so lässt sich klären, warum
+        // etwas stehen bleibt: hält er es für Stimme, kann keine Einstellung es wegnehmen.
+        if self.denoise_active() {
+            let running = self.meter.as_ref().is_some_and(|m| m.agc_output_name.is_some());
+            if running {
+                let f = self.chain_control.feedback();
+                let (farbe, urteil) = if f.speech > 0.85 {
+                    (Color32::from_rgb(90, 200, 120), t("hält das für deine Stimme", "considers this your voice"))
+                } else if f.speech > 0.5 {
+                    (Color32::from_rgb(200, 180, 60), t("unsicher", "unsure"))
+                } else {
+                    (Color32::from_rgb(170, 176, 186), t("hält das für Störgeräusch", "considers this noise"))
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}: {:.2}", t("Sprache erkannt", "Speech detected"), f.speech));
+                    ui.colored_label(farbe, urteil);
+                    if f.duck_db > 0.5 {
+                        ui.label(format!("· {} {:.0} dB", t("senkt gerade ab um", "currently ducking by"), f.duck_db));
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(t(
+                        "Räusper dich einmal und sieh auf die Zahl: bleibt sie oben, hält der Filter das \
+                         Räuspern für Sprache – dann hilft auch „Stark“ nicht, dafür bräuchte es ein anderes Modell.",
+                        "Clear your throat once and watch the number: if it stays high, the filter takes it for \
+                         speech – then no setting helps, that would need a different model.",
+                    ))
+                    .small()
+                    .weak(),
+                );
+            } else {
+                ui.label(egui::RichText::new(t("Der Filter läuft erst mit einem Ausgang.", "The filter only runs with an output.")).small().weak());
+            }
         }
         ui.separator();
 
