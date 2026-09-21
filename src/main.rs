@@ -12,6 +12,7 @@ mod autostart;
 mod beep;
 mod dsp;
 mod echo;
+mod headset;
 mod instance;
 mod lang;
 mod level;
