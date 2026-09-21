@@ -791,13 +791,39 @@ impl LaermampelApp {
                     t("Automatische Lautstärke: aus", "Auto level: off").to_string()
                 });
                 let gate_hover = if gate_on(s) {
-                    format!(
+                    let head = format!(
                         "{}: {:.0} dB, {} {:.0} dB",
                         t("Noise Gate: Schwelle", "Noise gate: threshold"),
                         s.gate_threshold_db,
                         t("Mikrofon gerade", "microphone currently"),
                         feedback.map_or(voice_db, |f| f.gate_level_db)
-                    )
+                    );
+                    // Ohne Ausgang ist das ein ganz anderes Gate: nicht gerechnet, sondern am
+                    // Windows-Regler gezogen. Das muss dranstehen, sonst wundert man sich, warum
+                    // es träge ist und anfangs kaum absenkt.
+                    if running {
+                        format!(
+                            "{head}\n{}",
+                            t(
+                                "Gleitend wie bei Voicemeeter: über der Schwelle unverändert, darunter je dB \
+                                 3 dB leiser, höchstens um die eingestellte Absenkung.",
+                                "Smooth like Voicemeeter: untouched above the threshold, 3 dB down per dB below, \
+                                 at most the configured range.",
+                            )
+                        )
+                    } else {
+                        format!(
+                            "{head}\n{}",
+                            t(
+                                "Ohne Ausgang zieht das Gate den Mikrofon-Regler von Windows: nur alle 16 ms, \
+                                 bis zur ersten Messung höchstens 10 dB, und es gilt für alle Programme. \
+                                 Gerechnet – gleitend wie bei Voicemeeter – wird erst mit VB-Cable als Ausgang.",
+                                "Without an output the gate pulls the Windows microphone level: only every 16 ms, \
+                                 at most 10 dB until it has measured once, and it applies to every program. \
+                                 The computed, Voicemeeter-style gate needs VB-Cable as the output.",
+                            )
+                        )
+                    }
                 } else {
                     t("Noise Gate: aus (ganz links)", "Noise gate: off (fully left)").to_string()
                 };

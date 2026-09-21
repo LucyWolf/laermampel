@@ -706,6 +706,37 @@ mod tests {
         }
     }
 
+    /// Auf „aus“ muss das Gate wirklich nichts tun – wer sich auf die Störfilter verlässt,
+    /// stellt es ganz nach links und darf dann keinen Unterschied hören.
+    #[test]
+    fn gate_aus_laesst_alles_durch() {
+        let input = vowel(RATE as usize, -20.0);
+        let mut chain = Chain::new(RATE);
+        chain.set(Settings::default());
+        let out = run(&mut chain, &input);
+        assert_eq!(out, input, "„aus“ verändert den Ton trotzdem");
+    }
+
+    /// Ein Wortanfang nach Stille darf höchstens ganz kurz gedämpft sein.
+    #[test]
+    fn gate_frisst_keinen_wortanfang() {
+        let mut chain = Chain::new(RATE);
+        chain.set(gate_settings());
+        let ruhe = noise(RATE as usize, 0.0005);
+        let wort = vowel(RATE as usize, -20.0);
+        let mut input = ruhe.clone();
+        input.extend_from_slice(&wort);
+        let out = run(&mut chain, &input);
+
+        let start = ruhe.len();
+        let fehlt = |ms: usize| {
+            let n = RATE as usize * ms / 1000;
+            rms_db(&input[start..start + n]) - rms_db(&out[start..start + n])
+        };
+        assert!(fehlt(20) < 3.0, "nach 20 ms fehlen noch {:.1} dB", fehlt(20));
+        assert!(fehlt(50) < 1.0, "nach 50 ms fehlen noch {:.1} dB", fehlt(50));
+    }
+
     #[test]
     fn rauschfilter_entfernt_rauschen() {
         let mut chain = Chain::new(RATE);
