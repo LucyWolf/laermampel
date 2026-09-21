@@ -166,6 +166,8 @@ pub struct Meter {
     /// Gerät, dessen Ton für die Echounterdrückung mitgehört wird.
     pub echo_reference: Option<String>,
     pub echo_error: Option<String>,
+    /// Was die Echounterdrückung gerade wegrechnet.
+    pub echo_status: Arc<echo::Status>,
 }
 
 impl Meter {
@@ -231,10 +233,11 @@ impl Meter {
         let mut echo = None;
         let mut echo_reference = None;
         let mut echo_error = None;
+        let echo_status = Arc::new(echo::Status::default());
         if echo_cancel {
             match echo::start_reference(None, Arc::clone(&fault)) {
                 Ok(reference) => {
-                    let unit = Echo::new(input_rate, reference);
+                    let unit = Echo::new(input_rate, reference, Arc::clone(&echo_status));
                     echo_reference = Some(unit.reference_name().to_string());
                     echo = Some(unit);
                 }
@@ -266,6 +269,7 @@ impl Meter {
             agc_error,
             echo_reference,
             echo_error,
+            echo_status,
         })
     }
 

@@ -12,10 +12,14 @@
 //! ```
 //!
 //! Gerechnet wird in Blöcken von 10 ms (so arbeitet AEC3), das Mikrofon kommt also um
-//! 10 ms verzögert heraus. Die Verzögerung zwischen Wiedergabe und Mikrofon sucht AEC3
-//! selbst; deshalb muss hier nichts ausgemessen werden.
+//! 10 ms verzögert heraus. Die *akustische* Verzögerung (Kopfhörer → Luft → Mikrofon) sucht
+//! AEC3 selbst, aber nur in einem Fenster von ein paar hundert Millisekunden. Alles, was hier
+//! an Vorlauf im Puffer steht, kommt oben drauf: staut sich die Wiedergabe an, liegt der Bezug
+//! außerhalb dieses Fensters und der Filter findet ihn nie. Deshalb wird die Wiedergabe kurz
+//! gehalten (siehe `MAX_REFERENCE_BLOCKS`).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
@@ -28,8 +32,67 @@ use crate::audio::{Fault, describe};
 
 /// Ein Block von 10 ms; darauf arbeitet AEC3.
 const BLOCK_MS: usize = 10;
-/// So viel Vorlauf darf die Wiedergabe haben, bevor Ältestes verworfen wird (eine halbe Sekunde).
-const MAX_REFERENCE_SECONDS: f32 = 0.5;
+/// So viel Vorlauf darf die Wiedergabe haben, bevor Ältestes verworfen wird.
+///
+/// Zwei Blöcke (20 ms) reichen als Polster gegen den Ruckler zwischen zwei Audio-Threads und
+/// bleiben weit innerhalb des Fensters, in dem AEC3 den Bezug noch findet. Vorher stand hier
+/// eine halbe Sekunde – damit lag die Wiedergabe so weit hinter dem Mikrofon, dass gar nichts
+/// mehr herausgerechnet wurde.
+const MAX_REFERENCE_BLOCKS: usize = 2;
+/// Wie oft nach den Kennzahlen des Filters gesehen wird (alle 50 Blöcke = zweimal pro Sekunde).
+const STATS_EVERY_BLOCKS: u32 = 50;
+
+/// Was die Echounterdrückung gerade tut – aus dem Audio-Thread für die Oberfläche.
+#[derive(Debug)]
+pub struct Status {
+    /// Um wie viel dB das Echo leiser wird (ERLE), in Zehntel-dB; `i32::MIN` = noch nichts.
+    erle_dbx10: AtomicI32,
+    /// Verzögerung zwischen Wiedergabe und Mikrofon, die AEC3 gefunden hat; −1 = unbekannt.
+    delay_ms: AtomicI32,
+    /// Wie oft die Wiedergabe zu spät kam und mit Stille aufgefüllt werden musste.
+    underruns: AtomicU32,
+}
+
+impl Status {
+    fn report(&self, erle_db: Option<f64>, delay_ms: Option<i32>) {
+        if let Some(db) = erle_db {
+            self.erle_dbx10.store((db * 10.0) as i32, Ordering::Relaxed);
+        }
+        self.delay_ms.store(delay_ms.unwrap_or(-1), Ordering::Relaxed);
+    }
+
+    fn count_underrun(&self) {
+        self.underruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Um wie viel dB das Echo gerade gedämpft wird.
+    pub fn erle_db(&self) -> Option<f32> {
+        match self.erle_dbx10.load(Ordering::Relaxed) {
+            i32::MIN => None,
+            x => Some(x as f32 / 10.0),
+        }
+    }
+
+    /// Gefundene Verzögerung in ms.
+    pub fn delay_ms(&self) -> Option<i32> {
+        match self.delay_ms.load(Ordering::Relaxed) {
+            -1 => None,
+            ms => Some(ms),
+        }
+    }
+
+    pub fn underruns(&self) -> u32 {
+        self.underruns.load(Ordering::Relaxed)
+    }
+
+}
+
+impl Default for Status {
+    /// Frisch heißt: noch nichts gemessen (nicht „0 dB Dämpfung“).
+    fn default() -> Self {
+        Status { erle_dbx10: AtomicI32::new(i32::MIN), delay_ms: AtomicI32::new(-1), underruns: AtomicU32::new(0) }
+    }
+}
 
 /// Läuft mit, was aus den Kopfhörern kommt.
 pub struct Reference {
@@ -41,15 +104,24 @@ pub struct Reference {
 
 impl Reference {
     /// Ein Block Wiedergabe, oder Stille, wenn gerade nichts läuft.
-    fn take_block(&mut self, out: &mut [f32]) {
+    ///
+    /// Gibt `true` zurück, wenn aufgefüllt werden musste: dann ist die Wiedergabe gegenüber
+    /// dem Mikrofon um genau diesen Block verrutscht, und AEC3 muss den Bezug neu suchen.
+    fn take_block(&mut self, out: &mut [f32]) -> bool {
+        let short = self.samples.occupied_len() < out.len();
         for slot in out.iter_mut() {
             *slot = self.samples.try_pop().unwrap_or(0.0);
         }
+        short
     }
 
     /// Hat sich zu viel angestaut (z.B. nach einem Hänger), das Älteste wegwerfen.
-    fn trim(&mut self) {
-        let max = (self.rate as f32 * MAX_REFERENCE_SECONDS) as usize;
+    ///
+    /// `block` ist ein Block in Samples dieses Geräts. Stehen mehr als
+    /// `MAX_REFERENCE_BLOCKS` davon an, ist alles darüber alter Ton, der nur noch den
+    /// Abstand zum Mikrofon vergrößert.
+    fn trim(&mut self, block: usize) {
+        let max = block * MAX_REFERENCE_BLOCKS;
         let filled = self.samples.occupied_len();
         if filled > max {
             self.samples.skip(filled - max);
@@ -125,16 +197,23 @@ pub struct Echo {
     ref_out: Vec<f32>,
     /// Fertige Samples, die noch abgeholt werden.
     ready: std::collections::VecDeque<f32>,
+    /// Kennzahlen für die Oberfläche.
+    status: Arc<Status>,
+    /// Blöcke seit dem letzten Blick auf die Kennzahlen.
+    since_stats: u32,
 }
 
 impl Echo {
-    pub fn new(mic_rate: u32, reference: Reference) -> Self {
+    pub fn new(mic_rate: u32, reference: Reference, status: Arc<Status>) -> Self {
         let config = Config {
             // Nur das Echo: Rauschen und Lautstärke macht die eigene Kette.
             echo_canceller: Some(EchoCanceller {
                 enforce_high_pass_filtering: true,
                 // Erkennt selbst, wenn gar kein Echo da ist, und hält sich dann zurück.
-                transparent_mode: TransparentModeType::default(),
+                // Der Zähler-Ansatz (Legacy) braucht dafür lange: nimmt man das Headset ab,
+                // hält er noch eine ganze Weile „kein Echo da“ fest und lässt es durch.
+                // Das Markov-Modell schaltet in beide Richtungen schneller um.
+                transparent_mode: TransparentModeType::Hmm,
             }),
             ..Default::default()
         };
@@ -152,6 +231,8 @@ impl Echo {
             ref_in: vec![0.0; ref_frames],
             ref_out: vec![0.0; ref_frames],
             ready: std::collections::VecDeque::with_capacity(mic_frames * 2),
+            status,
+            since_stats: 0,
         }
     }
 
@@ -164,8 +245,11 @@ impl Echo {
         self.mic_in.push(x);
         if self.mic_in.len() == self.mic_out.len() {
             // Erst die Wiedergabe: AEC3 braucht sie, bevor es das Mikrofon sieht.
-            self.reference.trim();
-            self.reference.take_block(&mut self.ref_in);
+            let block = self.ref_in.len();
+            self.reference.trim(block);
+            if self.reference.take_block(&mut self.ref_in) {
+                self.status.count_underrun();
+            }
             let _ = self.apm.process_render_f32(&[&self.ref_in], &mut [&mut self.ref_out]);
             if self.apm.process_capture_f32(&[&self.mic_in], &mut [&mut self.mic_out]).is_ok() {
                 self.ready.extend(self.mic_out.iter().copied());
@@ -174,6 +258,13 @@ impl Echo {
                 self.ready.extend(self.mic_in.iter().copied());
             }
             self.mic_in.clear();
+
+            self.since_stats += 1;
+            if self.since_stats >= STATS_EVERY_BLOCKS {
+                self.since_stats = 0;
+                let stats = self.apm.statistics();
+                self.status.report(stats.echo_return_loss_enhancement, stats.delay_ms);
+            }
         }
         self.ready.pop_front().unwrap_or(0.0)
     }
