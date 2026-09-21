@@ -517,6 +517,16 @@ impl Chain {
         self.gate.level_db()
     }
 
+    /// Wie sicher der Rauschfilter gerade Sprache hört. Ohne Filter gilt alles als Sprache.
+    pub fn speech(&self) -> f32 {
+        if self.settings.denoise { self.denoiser.as_ref().map_or(1.0, |d| d.vad) } else { 1.0 }
+    }
+
+    /// Absenkung, die der Filter gerade zusätzlich fährt, weil er keine Stimme hört.
+    pub fn duck_db(&self) -> f32 {
+        if self.settings.denoise { self.duck_db } else { 0.0 }
+    }
+
     pub fn comp_gain_db(&self) -> f32 {
         if self.settings.comp.enabled { self.comp.gain_db() } else { 0.0 }
     }
@@ -737,6 +747,51 @@ mod tests {
         };
         let unterschied = mit(11.0) - mit(0.0);
         assert!((unterschied - 11.0).abs() < 0.5, "Fader bringt mit Comp. nur {unterschied:.1} dB");
+    }
+
+    /// Grob wie ein Räuspern: kurzer, rauer Ausbruch aus tiefem Rauschen, kaum harmonisch.
+    fn raeuspern(n: usize, ziel_db: f32) -> Vec<f32> {
+        let mut tief = Formant::new(180.0, 300.0);
+        let mut mitte = Formant::new(550.0, 500.0);
+        let roh = noise(n, 1.0);
+        let mut raw: Vec<f32> = roh
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                let t = i as f32 / RATE;
+                // Zwei Stöße von je ~250 ms, dazwischen fast nichts.
+                let stoss = (-((t % 0.6 - 0.12) / 0.09).powi(2)).exp();
+                (tief.run(x) + 0.6 * mitte.run(x)) * stoss
+            })
+            .collect();
+        let gain = db_to_gain(ziel_db - rms_db(&raw));
+        for x in &mut raw {
+            *x *= gain;
+        }
+        raw
+    }
+
+    /// Was der Filter *nicht* für Stimme hält, wirft er bei „Medium“ und „Stark“ heraus –
+    /// „Leicht“ filtert nur. Damit ist gezeigt: die Mechanik greift, es hängt allein daran,
+    /// wofür das Netz einen Laut hält.
+    #[test]
+    fn nicht_stimme_fliegt_raus() {
+        let weg = |dry: f32, duck: f32, vad: f32| {
+            let mut chain = Chain::new(RATE);
+            let mut s = Settings::default();
+            s.denoise = true;
+            s.denoise_dry = dry;
+            s.denoise_duck_db = duck;
+            s.denoise_speech_vad = vad;
+            chain.set(s);
+            let input = raeuspern(RATE as usize * 3, -20.0);
+            let out = run(&mut chain, &input);
+            tail_rms(&input) - tail_rms(&out)
+        };
+        // Werte aus settings::DenoiseLevel.
+        assert!(weg(0.32, 0.0, 0.6) < 11.0, "„Leicht“ nimmt zu viel weg");
+        assert!(weg(0.0, 40.0, 0.6) > 35.0, "„Medium“ lässt Nicht-Stimme stehen");
+        assert!(weg(0.0, 60.0, 0.85) > 50.0, "„Stark“ lässt Nicht-Stimme stehen");
     }
 
     #[test]

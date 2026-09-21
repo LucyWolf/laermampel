@@ -79,6 +79,10 @@ Risiko für Aussetzer.
 
 Die Ampel misst weiterhin vor dem Kanalzug, zeigt also, wie laut du wirklich sprichst.
 
+Im Fenster „Rauschen“ steht bei laufendem Filter live, **wofür er den Ton gerade hält** („Sprache erkannt: 0,97").
+Bleibt die Zahl beim Räuspern oben, hält das Netz es für Sprache – dann nimmt es auch „Stark“ nicht weg, denn
+abgesenkt wird nur, was der Filter *nicht* für Stimme hält.
+
 Im Fenster „Rauschen“ (Knopf im Kanalzug) zeigt ein Frequenz-Diagramm (wie in ReaFir), was das Mikrofon gerade hört.
 „Rauschprofil messen“ nimmt zwei Sekunden Stille auf und legt sie als graue Linie darüber (bleibt gespeichert);
 die gelbe Linie ist die Gate-Schwelle.

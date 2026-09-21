@@ -20,6 +20,10 @@ pub struct Feedback {
     pub gate_open: bool,
     pub gate_level_db: f32,
     pub comp_gain_db: f32,
+    /// Wie sicher der Rauschfilter gerade Sprache hört (0 bis 1).
+    pub speech: f32,
+    /// Wie viel der Filter gerade zusätzlich absenkt, weil er keine Stimme hört.
+    pub duck_db: f32,
 }
 
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
@@ -166,6 +170,8 @@ impl VoiceChain {
                     gate_open: self.chain.gate_open(),
                     gate_level_db: self.chain.gate_level_db(),
                     comp_gain_db: self.chain.comp_gain_db(),
+                    speech: self.chain.speech(),
+                    duck_db: self.chain.duck_db(),
                 };
             }
         }
