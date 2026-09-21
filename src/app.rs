@@ -928,8 +928,6 @@ impl LaermampelApp {
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)))
                 .on_hover_text(self.latency_details());
 
-            self.output_picker_ui(ui);
-
             if nothing_processes {
                 let verb = if needs_cable.len() == 1 { t("wirkt", "works") } else { t("wirken", "work") };
                 // Der Ausgang ist von Hand abgeschaltet? Dann ist nicht VB-Cable das Problem.
@@ -939,10 +937,11 @@ impl LaermampelApp {
                 let warning = egui::RichText::new(text).small().color(RED_TEXT);
                 let hint = if off {
                     t(
-                        "Der Ausgang steht auf „aus“. Darüber „Ausgang“ anklicken und ein virtuelles Gerät \
-                         wählen, dann wirkt es auch in anderen Programmen.",
-                        "The output is off. Click “Output” above and pick a virtual device, then it also \
-                         works in other programs.",
+                        "Der Ausgang steht auf „aus“. Klick hier: unter dem Zahnrad bei „Kanalzug: Ausgang \
+                         und Feineinstellungen“ ein virtuelles Gerät wählen, dann wirkt es auch in anderen \
+                         Programmen.",
+                        "The output is off. Click here: under the gear, in “Channel strip: output and fine \
+                         tuning”, pick a virtual device, then it also works in other programs.",
                     )
                 } else {
                     t(
@@ -999,9 +998,8 @@ impl LaermampelApp {
         let mut pick: Option<(bool, Option<String>)> = None;
         let mut refresh = false;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new(t("Ausgang", "Output")).small().color(Color32::from_rgb(170, 176, 186)));
-            let text = egui::RichText::new(format!("{current} ▾")).small();
+            ui.label(t("Ausgang", "Output"));
+            let text = egui::RichText::new(format!("{current} ▾"));
             let menu = ui.menu_button(text, |ui| {
                 if ui.selectable_label(off, t("Aus", "Off")).clicked() {
                     pick = Some((true, None));
@@ -1231,6 +1229,7 @@ impl LaermampelApp {
     }
 
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
+        self.output_picker_ui(ui);
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         if output_error.as_deref() == Some(agc::vb_cable_missing()) {
@@ -1368,7 +1367,7 @@ impl LaermampelApp {
 
 
         ui.separator();
-        egui::CollapsingHeader::new(t("Kanalzug: Ausgabe und Feineinstellungen", "Channel strip: output and fine tuning"))
+        egui::CollapsingHeader::new(t("Kanalzug: Ausgang und Feineinstellungen", "Channel strip: output and fine tuning"))
             .id_salt("strip_details")
             .default_open(self.meter.as_ref().and_then(|m| m.agc_error.as_deref()).is_some_and(|e| e != agc::vb_cable_missing()))
             .show(ui, |ui| self.channel_details_ui(ui));

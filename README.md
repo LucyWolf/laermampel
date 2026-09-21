@@ -39,7 +39,7 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Empfindlichkeit:** Regler unter dem Gerätenamen, in Prozent. Das ist der Mikrofonpegel von Windows; das Gate senkt von diesem Wert aus ab.
-- **Ausgang wählen:** unter der Pegelanzeige auf „Ausgang … ▾“ klicken: Aus, automatisch VB-Cable, oder ein virtuelles Gerät (VB-Cable, Voicemeeter). Kopfhörer und Lautsprecher stehen wegen Rückkopplung nicht zur Wahl.
+- **Ausgang wählen:** Zahnrad oben rechts → „Kanalzug: Ausgang und Feineinstellungen“ → „Ausgang“: Aus, automatisch VB-Cable, oder ein virtuelles Gerät (VB-Cable, Voicemeeter). Kopfhörer und Lautsprecher stehen wegen Rückkopplung nicht zur Wahl. Das stellt man einmal ein, deshalb steht es nicht im Kanalzug.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (−100 bis 0 dB): gleitend wie bei Voicemeeter. Über der Schwelle bleibt alles unverändert, darunter wird pro dB darunter um 3 dB zusätzlich abgesenkt (höchstens um die eingestellte Absenkung). Je höher das Gate, desto niedriger der Pegel; die Anzeige zeigt den Pegel nach dem Gate. Ganz links (−100) ist aus.
   Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows gleitend herunter (gilt für alle Programme). Die Lärmampel senkt dabei nur so weit ab, dass sie dich noch hört, und regelt das selbst nach; hängt das Gate trotzdem, öffnet sie nach 4 s kurz den Regler und misst neu. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
