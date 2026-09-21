@@ -54,6 +54,9 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   überfahren zeigt, welches Gerät das ist, um wie viel dB das Echo gerade leiser wird und welchen Versatz der
   Filter gefunden hat. Steht dort „Noch kein Echo gefunden“, läuft entweder kein Ton oder das falsche Gerät ist
   das Standardgerät. Kostet 10 ms und wirkt – wie Comp. und Limiter – für andere Programme nur über den Ausgang.
+  Was der Filter stehen lässt (Verzerrungen kleiner Kopfhörer-Treiber, Nachhall vom Tisch), wird danach noch um
+  bis zu 8 dB abgesenkt – aber nur, solange es wirklich nur Restecho ist. Sobald du redest, geht die Absenkung
+  sofort wieder auf.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
 - **Mute:** Mikrofon für andere stumm, die Pegelanzeige wird grau. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
 - Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Limiter, Rauschfilter und Echo wirken in anderen Programmen nur mit VB-Cable.
