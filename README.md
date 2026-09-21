@@ -49,9 +49,17 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   - **Limiter:** über der ganzen Anzeige, Linie runterziehen (−40 bis 0 dB, Anzeige −100 bis 0 dB). Auf 0 ist er aus und nur beim Überfahren zu sehen, Doppelklick schaltet ihn aus.
   - Gegriffen wird die Linie, die der Maus am nächsten ist; am Rand nur Gelb und Rot.
 - **Rausch:** öffnet das Fenster „Rauschen“ mit Filter-Schalter (RNNoise), Frequenz-Diagramm und Rauschprofil. Grüner Knopf heißt, der Filter läuft; er wirkt über den Ausgang und braucht ein Mikrofon mit 48 kHz.
+- **Echo:** rechnet heraus, was aus deinen Kopfhörern wieder ins Mikrofon geht (wichtig, wenn das Headset
+  neben dir liegt statt auf dem Kopf). Dafür wird das **Standard-Wiedergabegerät** von Windows mitgehört;
+  überfahren zeigt, welches Gerät das ist, um wie viel dB das Echo gerade leiser wird und welchen Versatz der
+  Filter gefunden hat. Steht dort „Noch kein Echo gefunden“, läuft entweder kein Ton oder das falsche Gerät ist
+  das Standardgerät. Kostet 10 ms und wirkt – wie Comp. und Limiter – für andere Programme nur über den Ausgang.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
 - **Mute:** Mikrofon für andere stumm, die Pegelanzeige wird grau. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
-- Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Fader und Limiter wirken in anderen Programmen nur mit VB-Cable.
+- Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Limiter, Rauschfilter und Echo wirken in anderen Programmen nur mit VB-Cable.
+- Der **Fader** verstellt ohne Ausgang den Mikrofon-Regler von Windows. Der hat einen festen Bereich: steht er
+  schon am Anschlag, kommt ein Aufdrehen nicht mehr an. Das Überfahren des Faders sagt, wie viele dB gerade
+  verloren gehen – weiter hoch geht es dann nur mit VB-Cable als Ausgang.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
 
 Einrichten:

@@ -199,6 +199,20 @@ impl LaermampelApp {
     }
 
     fn restart_meter(&mut self) {
+        // Beim Ablösen festhalten, wie die Echounterdrückung lief: sonst steht davon nichts
+        // im Log, wenn jemand fragt, warum trotzdem alles durchkommt.
+        if let Some(old) = &self.meter
+            && old.echo_reference.is_some()
+        {
+            let erle = old.echo_status.erle_db();
+            log!(
+                "Echo: hörte auf {}, {} dB weggerechnet, Versatz {} ms, {} Blöcke ohne Wiedergabe",
+                old.echo_reference.clone().unwrap_or_default(),
+                erle.map_or("–".to_string(), |db| format!("{db:.0}")),
+                old.echo_status.delay_ms().map_or("–".to_string(), |ms| ms.to_string()),
+                old.echo_status.underruns()
+            );
+        }
         self.meter = None;
         self.last_retry = Instant::now();
         let voice_setup = (!self.settings.output_off).then(|| VoiceSetup {
@@ -607,6 +621,11 @@ impl LaermampelApp {
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         let echo_reference = self.meter.as_ref().and_then(|m| m.echo_reference.clone());
         let echo_error = self.meter.as_ref().and_then(|m| m.echo_error.clone());
+        // Ob der Filter wirklich etwas wegrechnet, sieht man sonst nirgends.
+        let echo_work = self.meter.as_ref().map(|m| (m.echo_status.erle_db(), m.echo_status.delay_ms()));
+        // Für den Fader: was der Windows-Regler vom eingestellten Gain wirklich hergibt.
+        let fader_short_db = self.volume_gate.fader_short_db();
+        let windows_slider = self.volume_gate.has_windows_slider();
         let mut restart_for_echo = false;
         let rate_48k = self.meter.as_ref().is_none_or(|m| m.input_rate == 48_000);
         let devices = self.devices.clone();
@@ -652,6 +671,12 @@ impl LaermampelApp {
         }
         if s.denoise && rate_48k {
             needs_cable.push("Rauschfilter");
+        }
+        // Die Echounterdrückung säubert den Ton *innerhalb* der Lärmampel. Ohne Ausgang geht
+        // dieser saubere Ton nirgendwo hin: Discord & Co. bekommen weiter das rohe Mikrofon
+        // von Windows, also auch alles, was aus den Kopfhörern kommt.
+        if s.echo_cancel {
+            needs_cable.push("Echo");
         }
         let nothing_processes = !needs_cable.is_empty() && feedback.is_none();
 
@@ -787,7 +812,41 @@ impl LaermampelApp {
                 // Bildschirm: beide Anzeigen sollen bei derselben Stimme dasselbe zeigen.
                 let zones = (&mut s.yellow_db, &mut s.red_db);
                 strip::level_meter(ui, meter_db, muted, gate_marker, running, &mut s.agc_ceiling_db, zones, beeps, 230.0);
-                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text(t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"));
+                // Ohne Ausgang stellt der Fader den Windows-Mikrofonpegel – und der hat einen
+                // festen Bereich. Steht er schon oben, passiert beim Aufdrehen gar nichts;
+                // das muss hier stehen, sonst sieht es nach einem kaputten Fader aus.
+                let fader_hover = if running {
+                    t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB").to_string()
+                } else if !windows_slider {
+                    format!(
+                        "{}\n{}",
+                        t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"),
+                        t(
+                            "Wirkt gerade nicht: ohne Ausgang stellt der Fader den Mikrofonpegel von Windows, \
+                             und der ist nicht erreichbar. Mit VB-Cable als Ausgang rechnet die Lärmampel selbst.",
+                            "Does nothing right now: without an output the fader moves the Windows microphone \
+                             level, and that is out of reach. Pick VB-Cable as the output and the app does it itself.",
+                        )
+                    )
+                } else if fader_short_db > 1.0 {
+                    format!(
+                        "{}\n{} {:.0} {}",
+                        t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"),
+                        t("Der Mikrofonpegel von Windows steht schon am Anschlag – die letzten", "The Windows microphone level is already at its limit –"),
+                        fader_short_db,
+                        t(
+                            "dB kommen nicht an. Mehr geht nur mit VB-Cable als Ausgang.",
+                            "the last dB do not arrive. More is only possible with VB-Cable as the output.",
+                        )
+                    )
+                } else {
+                    format!(
+                        "{}\n{}",
+                        t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"),
+                        t("Stellt gerade den Mikrofonpegel von Windows, gilt für alle Programme.", "Currently moves the Windows microphone level, which applies to every program."),
+                    )
+                };
+                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text(fader_hover);
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
                     strip::toggle_button(ui, &mut display_open, t("Anzeige", "Display"), Color32::from_rgb(70, 110, 170))
@@ -820,7 +879,20 @@ impl LaermampelApp {
                     let echo_color = if s.echo_cancel { strip::ACCENT } else { Color32::from_rgb(70, 110, 170) };
                     let echo_hover = match (s.echo_cancel, &echo_reference, &echo_error) {
                         (true, _, Some(e)) => e.clone(),
-                        (true, Some(name), _) => format!("{} „{name}“.", t("Echounterdrückung läuft, hört mit auf", "Echo cancellation running, listening to")),
+                        (true, Some(name), _) => {
+                            let head = format!("{} „{name}“.", t("Echounterdrückung läuft, hört mit auf", "Echo cancellation running, listening to"));
+                            // Ohne Zahlen weiß niemand, ob der Filter greift oder nur mitläuft.
+                            match echo_work {
+                                Some((Some(erle), delay)) => {
+                                    let found = match delay {
+                                        Some(ms) => format!(", {} {ms} ms", t("Versatz", "offset")),
+                                        None => String::new(),
+                                    };
+                                    format!("{head}\n{} {erle:.0} dB{found}", t("Echo gerade leiser um", "Echo currently reduced by"))
+                                }
+                                _ => format!("{head}\n{}", t("Noch kein Echo gefunden – spielt gerade Ton?", "No echo found yet – is anything playing?")),
+                            }
+                        }
                         (true, None, _) => t("Echounterdrückung an.", "Echo cancellation on.").to_string(),
                         (false, _, _) => t(
                             "Rechnet heraus, was aus deinen Kopfhörern wieder ins Mikrofon kommt. Kostet 10 ms.",

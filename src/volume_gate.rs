@@ -110,6 +110,8 @@ pub struct VolumeGate {
     recheck_until: Option<Instant>,
     /// So weit darf höchstens abgesenkt werden, damit die Messung noch etwas hört.
     reduction_cap_db: f32,
+    /// Wie viel vom Fader der Windows-Regler nicht hergibt (positiv: es geht nicht lauter).
+    fader_short_db: f32,
 }
 
 impl VolumeGate {
@@ -136,6 +138,7 @@ impl VolumeGate {
             closed_baseline_db: None,
             recheck_until: None,
             reduction_cap_db: 0.0,
+            fader_short_db: 0.0,
         };
         gate.restore_leftover();
         gate
@@ -148,6 +151,16 @@ impl VolumeGate {
     /// Wie viel leiser andere dich gerade hören.
     pub fn reduction_db(&self) -> f32 {
         self.reduction_db
+    }
+
+    /// Wie viel dB vom Fader der Windows-Regler nicht hergibt (0 = alles angekommen).
+    pub fn fader_short_db(&self) -> f32 {
+        self.fader_short_db
+    }
+
+    /// Ob die Lärmampel den Windows-Regler überhaupt in der Hand hat.
+    pub fn has_windows_slider(&self) -> bool {
+        self.has_volume()
     }
 
     /// Wie viel leiser die Lärmampel das Mikrofon gerade hört, weil der Regler unten steht.
@@ -189,10 +202,17 @@ impl VolumeGate {
             return real_db;
         }
         if !self.has_volume() && !self.attach() {
+            // Kein Zugriff auf den Windows-Regler: der Fader kommt nirgends an.
+            self.fader_short_db = fader_db.max(0.0);
             return real_db;
         }
         // Fader verschiebt den Ausgangspunkt, das Gate senkt von dort weiter ab.
-        self.base_db = self.clamp_db(self.original_db + fader_db);
+        // Der Regler von Windows hat aber einen festen Bereich: steht er schon oben, bringt
+        // ein Fader nach oben gar nichts mehr. Das merken wir uns, damit es die Oberfläche
+        // sagen kann, statt den Fader stumm ins Leere laufen zu lassen.
+        let wanted_base = self.original_db + fader_db;
+        self.base_db = self.clamp_db(wanted_base);
+        self.fader_short_db = wanted_base - self.base_db;
 
         // Mute: Windows schaltet das Mikrofon für alle Programme stumm, auch für die Lärmampel.
         if mute != self.muted {
@@ -237,7 +257,9 @@ impl VolumeGate {
                 self.applied_db = current;
                 // Auch den Ausgangspunkt mitziehen: sonst schreibt `apply_reduction` unten noch
                 // im selben Bild den alten Wert zurück und die Änderung von Hand springt weg.
-                self.base_db = self.clamp_db(current + fader_db);
+                let wanted_base = current + fader_db;
+                self.base_db = self.clamp_db(wanted_base);
+                self.fader_short_db = wanted_base - self.base_db;
             }
         }
 
@@ -418,6 +440,8 @@ impl VolumeGate {
 
     /// Regler und Stummschaltung zurück auf den ursprünglichen Stand und loslassen.
     pub fn release(&mut self) {
+        // Losgelassen heißt auch: der Fader schuldet niemandem mehr etwas.
+        self.fader_short_db = 0.0;
         // Nichts angefasst: nichts zu tun (wird sonst jedes Bild aufgerufen, solange alles aus ist).
         if !self.has_volume() {
             return;
