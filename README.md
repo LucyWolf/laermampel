@@ -58,6 +58,10 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
   bis zu 8 dB abgesenkt – aber nur, solange es wirklich nur Restecho ist. Sobald du redest, geht die Absenkung
   sofort wieder auf.
 - **Ton:** Warnton, sobald deine Stimme über den roten Pfeil kommt.
+- **Stumm von außen:** Schaltet das Headset in der Hardware stumm (Taste am Ohr), erfährt Windows davon
+  nichts. Die Lärmampel merkt es trotzdem: Kommt länger als drei Sekunden nur digitale Stille an, bekommen
+  Punkt und Leiste denselben roten Ring wie bei Mute und im Kanalzug steht „⚠ Mikrofon liefert nur Stille“.
+  Das gilt genauso für ein abgestecktes oder falsch gewähltes Mikrofon.
 - **Mute:** Mikrofon für andere stumm, die Pegelanzeige wird grau. Auch im Rechtsklick-Menü des Symbols; Punkt und Symbol bekommen dann einen roten Ring.
 - Gate und Mute wirken auch ohne VB-Cable (über den Mikrofon-Regler von Windows; bei Mute bekommt dann auch die Lärmampel nur Stille). Comp., Limiter, Rauschfilter und Echo wirken in anderen Programmen nur mit VB-Cable.
 - Der **Fader** verstellt ohne Ausgang den Mikrofon-Regler von Windows. Der hat einen festen Bereich: steht er

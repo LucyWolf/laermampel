@@ -10,6 +10,8 @@ use crate::audio::{self, InputDevice, Meter, VoiceSetup};
 use crate::autostart;
 use crate::beep;
 use crate::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
+#[cfg(windows)]
+use crate::headset;
 use crate::instance;
 use crate::lang::{self, Language, t};
 use crate::level::{Level, Zone};
@@ -35,7 +37,21 @@ const MONITOR_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const REASSERT_INTERVAL: Duration = Duration::from_secs(1);
 
 const PREVIEW_DURATION: Duration = Duration::from_secs(3);
+/// Darunter liefert kein echtes Mikrofon mehr: das ist digitale Stille, also abgeschaltet.
+/// Ein stilles Zimmer liegt bei −60 bis −80 dB, ein stummes Headset bei −100.
+const SILENT_DB: f32 = -90.0;
+/// So lange muss die Stille anhalten, bevor gewarnt wird (kurze Aussetzer sind normal).
+const SILENT_FOR: Duration = Duration::from_secs(3);
 
+/// Stand der Suche nach der Mute-Taste im Headset.
+#[cfg_attr(not(windows), allow(dead_code))]
+enum ScanStatus {
+    Laeuft,
+    Fertig(std::path::PathBuf),
+    Fehler(String),
+}
+
+/// Kommt am Mikrofon lange genug gar nichts an, ist es stumm – egal wer es stummgeschaltet hat.
 fn gate_on(settings: &Settings) -> bool {
     settings.gate_threshold_db > settings::GATE_OFF_DB + 0.5
 }
@@ -113,6 +129,11 @@ pub struct LaermampelApp {
     noise_window_open: bool,
     autostart_enabled: bool,
     autostart_error: Option<String>,
+    /// Läuft gerade die Suche nach der Mute-Taste des Headsets? Ergebnis kommt aus dem Thread.
+    #[cfg(windows)]
+    headset_scan: Option<Arc<Mutex<ScanStatus>>>,
+    /// Seit wann am Mikrofon nur noch digitale Stille ankommt.
+    silent_since: Option<Instant>,
 
     tray: Option<Tray>,
     /// Einmal erzeugt: egui vergleicht Icons nur per Zeiger. Ein neues pro Bild würde
@@ -166,6 +187,9 @@ impl LaermampelApp {
             noise_window_open: false,
             autostart_enabled: autostart::is_enabled(),
             autostart_error: None,
+            #[cfg(windows)]
+            headset_scan: None,
+            silent_since: None,
             tray,
             icon: Arc::new(app_icon()),
             settings_window_seen: false,
@@ -302,6 +326,14 @@ impl LaermampelApp {
         }
     }
 
+    /// Liefert das Mikrofon seit Sekunden nur Stille? Dann ist es stumm, abgesteckt oder
+    /// das falsche Gerät. Der eigene Mute-Knopf zählt hier nicht mit, der zeigt sich selbst.
+    fn mic_silent(&self) -> bool {
+        !self.settings.mic_muted
+            && self.meter.is_some()
+            && self.silent_since.is_some_and(|t| t.elapsed() >= SILENT_FOR)
+    }
+
     fn zone_brightness(&self, zone: Zone) -> f32 {
         match zone {
             Zone::Green => self.settings.green_brightness,
@@ -387,8 +419,9 @@ impl LaermampelApp {
         let brightness = self.zone_brightness(zone);
         let tint = zone_color(zone).gamma_multiply(brightness);
 
-        // Stumm soll man immer sehen, auch wenn Grün ausgeblendet ist.
-        let muted = self.settings.mic_muted;
+        // Stumm soll man immer sehen, auch wenn Grün ausgeblendet ist. Stumm ist auch, wenn
+        // gar nichts mehr ankommt – dann nützt die Ampel nichts und niemand hört einen.
+        let muted = self.settings.mic_muted || self.mic_silent();
         let mute_ring = Stroke::new(2.5, Color32::from_rgb(220, 40, 40));
 
         match self.settings.display {
@@ -484,6 +517,80 @@ impl LaermampelApp {
             }
         });
         open
+    }
+
+    /// Sucht die Mute-Taste des Headsets im USB-Protokoll: Windows meldet sie nicht.
+    #[cfg(windows)]
+    fn headset_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading(t("Headset-Taste", "Headset button"));
+        match self.headset_scan.as_ref().map(|s| s.lock().ok().map(|g| match &*g {
+            ScanStatus::Laeuft => (0, String::new()),
+            ScanStatus::Fertig(p) => (1, p.display().to_string()),
+            ScanStatus::Fehler(e) => (2, e.clone()),
+        })) {
+            Some(Some((0, _))) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t("Hört mit – jetzt die Mute-Taste am Headset mehrmals drücken!", "Listening – press the mute button on your headset a few times now!"));
+                });
+            }
+            Some(Some((1, pfad))) => {
+                ui.label(t("Fertig. Die Mitschrift liegt hier:", "Done. The recording is here:"));
+                ui.horizontal(|ui| {
+                    if ui.button(t("Datei zeigen", "Show file")).clicked() {
+                        let _ = std::process::Command::new("explorer").arg(format!("/select,{pfad}")).spawn();
+                    }
+                    if ui.button(t("Nochmal", "Again")).clicked() {
+                        self.start_headset_scan(ui.ctx());
+                    }
+                });
+            }
+            Some(Some((_, fehler))) => {
+                ui.colored_label(RED_TEXT, fehler);
+                if ui.button(t("Nochmal", "Again")).clicked() {
+                    self.start_headset_scan(ui.ctx());
+                }
+            }
+            _ => {
+                if ui
+                    .button(format!("{} ({} s)", t("Mute-Taste des Headsets suchen", "Find the headset mute button"), headset::SCAN_SECONDS))
+                    .on_hover_text(t(
+                        "Schaltet dein Headset in der Hardware stumm, erfährt Windows davon nichts. \
+                         Die Lärmampel hört dann am USB-Protokoll mit, während du die Taste drückst, \
+                         und schreibt auf, was sich ändert. Aus der Datei baue ich die Anzeige.",
+                        "If your headset mutes in hardware, Windows never learns about it. This listens on \
+                         the USB protocol while you press the button and writes down what changes. That \
+                         file is what the indicator gets built from.",
+                    ))
+                    .clicked()
+                {
+                    self.start_headset_scan(ui.ctx());
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn start_headset_scan(&mut self, ctx: &egui::Context) {
+        let status = Arc::new(Mutex::new(ScanStatus::Laeuft));
+        self.headset_scan = Some(Arc::clone(&status));
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let ergebnis = headset::scan();
+            if let Ok(mut s) = status.lock() {
+                *s = match ergebnis {
+                    Ok(pfad) => {
+                        log!("Headset-Suche fertig: {}", pfad.display());
+                        ScanStatus::Fertig(pfad)
+                    }
+                    Err(e) => {
+                        log!("Headset-Suche fehlgeschlagen: {e}");
+                        ScanStatus::Fehler(e)
+                    }
+                };
+            }
+            ctx.request_repaint();
+        });
     }
 
     fn version_ui(&mut self, ui: &mut egui::Ui) {
@@ -953,6 +1060,19 @@ impl LaermampelApp {
             };
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)))
                 .on_hover_text(self.latency_details());
+
+            // Am Mikrofon kommt gar nichts mehr an: das merkt man sonst erst, wenn jemand fragt.
+            if self.mic_silent() {
+                ui.label(egui::RichText::new(t("⚠ Mikrofon liefert nur Stille", "⚠ Microphone delivers only silence")).small().color(RED_TEXT))
+                    .on_hover_text(t(
+                        "Seit ein paar Sekunden kommt nichts mehr an – nicht einmal Rauschen. Meist ist das \
+                         Headset in der Hardware stumm (Taste am Ohr), abgesteckt, oder es ist das falsche \
+                         Mikrofon ausgewählt. Punkt und Leiste zeigen das mit rotem Ring.",
+                        "Nothing has arrived for a few seconds – not even noise. Usually the headset is muted \
+                         in hardware (button on the earcup), unplugged, or the wrong microphone is selected. \
+                         The dot and bar show this with a red ring.",
+                    ));
+            }
 
             if nothing_processes {
                 let verb = if needs_cable.len() == 1 { t("wirkt", "works") } else { t("wirken", "work") };
@@ -1454,6 +1574,12 @@ impl LaermampelApp {
             }
         }
 
+        #[cfg(windows)]
+        {
+            ui.separator();
+            self.headset_ui(ui);
+        }
+
         ui.separator();
         ui.label(format!("{} {}×", t("Rot seit Programmstart:", "Red since start:"), self.red_count));
         if ui.button(t("Lärmampel beenden", "Quit Lärmampel")).clicked() {
@@ -1505,6 +1631,15 @@ impl eframe::App for LaermampelApp {
         // Ohne Mikrofon fällt die Anzeige auf Stille zurück, statt auf dem letzten Wert
         // stehen zu bleiben (sonst leuchtet der Punkt nach dem Abstecken ewig rot).
         let input = input.or_else(|| self.meter.is_none().then_some(audio::SILENCE_DB));
+        // Schaltet das Headset in der Hardware stumm, erfährt Windows nichts davon – am
+        // Mikrofon kommt dann aber digitale Stille an, und das sieht man.
+        match input {
+            Some(db) if db <= SILENT_DB => {
+                self.silent_since.get_or_insert(now);
+            }
+            Some(_) => self.silent_since = None,
+            None => {}
+        }
         self.voice.update(input, dt, now, &self.settings);
 
         // Was am Ausgang ankommt. Punkt, Leiste und der Balken im Kanalzug zeigen alle diese
