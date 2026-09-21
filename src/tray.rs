@@ -72,11 +72,16 @@ mod imp {
             actions
         }
 
-        pub fn set_state(&mut self, zone: Zone, muted: bool) {
+        /// `muted` färbt das Symbol (egal wer stummgeschaltet hat), `own_mute` setzt den
+        /// Haken im Menü – der gehört allein zum eigenen Knopf, sonst stünde dort ein Haken,
+        /// den man nicht wegklicken kann.
+        pub fn set_state(&mut self, zone: Zone, muted: bool, own_mute: bool) {
             if (zone, muted) != self.state {
                 self.state = (zone, muted);
                 let _ = self.icon.set_icon(Some(circle_icon(zone, muted)));
-                self.mute.set_checked(muted);
+            }
+            if self.mute.is_checked() != own_mute {
+                self.mute.set_checked(own_mute);
             }
         }
     }
@@ -124,7 +129,7 @@ mod imp {
             Vec::new()
         }
 
-        pub fn set_state(&mut self, _zone: Zone, _muted: bool) {}
+        pub fn set_state(&mut self, _zone: Zone, _muted: bool, _own_mute: bool) {}
     }
 }
 

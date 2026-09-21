@@ -21,7 +21,7 @@ use crate::spectrum::Spectrum;
 use crate::strip;
 use crate::tray::{Tray, TrayAction};
 use crate::updater::{self, Status, Updater};
-use crate::volume_gate::{GateParams, VolumeGate};
+use crate::volume_gate::{self, GateParams, VolumeGate};
 
 /// Der Pegelbalken auf dem Bildschirm zeigt genau denselben Bereich wie die Anzeige im
 /// Kanalzug. Sonst sitzt dieselbe Zahl in den beiden Anzeigen an verschiedenen Stellen:
@@ -42,6 +42,17 @@ const PREVIEW_DURATION: Duration = Duration::from_secs(3);
 const SILENT_DB: f32 = -90.0;
 /// So lange muss die Stille anhalten, bevor gewarnt wird (kurze Aussetzer sind normal).
 const SILENT_FOR: Duration = Duration::from_secs(3);
+
+/// Wer das Mikrofon stummgeschaltet hat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MuteReason {
+    /// Der Mute-Knopf der Lärmampel.
+    Eigen,
+    /// Windows selbst (Sound-Einstellungen, manche Treiber-Tasten).
+    Windows,
+    /// Weder noch, es kommt aber nichts an: Headset-Taste, Stecker, falsches Gerät.
+    Aussen,
+}
 
 /// Stand der Suche nach der Mute-Taste im Headset.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -134,6 +145,10 @@ pub struct LaermampelApp {
     headset_scan: Option<Arc<Mutex<ScanStatus>>>,
     /// Seit wann am Mikrofon nur noch digitale Stille ankommt.
     silent_since: Option<Instant>,
+    /// Sieht nach, ob Windows das Mikrofon stumm meldet.
+    mute_watch: volume_gate::MuteWatch,
+    /// Letzter Stand daraus (einmal pro Bild geholt, nicht bei jedem Zeichnen).
+    windows_muted: bool,
 
     tray: Option<Tray>,
     /// Einmal erzeugt: egui vergleicht Icons nur per Zeiger. Ein neues pro Bild würde
@@ -190,6 +205,8 @@ impl LaermampelApp {
             #[cfg(windows)]
             headset_scan: None,
             silent_since: None,
+            mute_watch: volume_gate::MuteWatch::default(),
+            windows_muted: false,
             tray,
             icon: Arc::new(app_icon()),
             settings_window_seen: false,
@@ -334,6 +351,21 @@ impl LaermampelApp {
             && self.silent_since.is_some_and(|t| t.elapsed() >= SILENT_FOR)
     }
 
+    /// Wer hat stummgeschaltet? Drei Möglichkeiten, und sie sehen verschieden aus:
+    /// der eigene Knopf, Windows, oder etwas außerhalb – dann bleibt nur das Headset
+    /// selbst (Taste am Ohr), ein abgezogener Stecker oder das falsche Gerät.
+    fn mute_reason(&self) -> Option<MuteReason> {
+        if self.settings.mic_muted {
+            Some(MuteReason::Eigen)
+        } else if self.windows_muted {
+            Some(MuteReason::Windows)
+        } else if self.mic_silent() {
+            Some(MuteReason::Aussen)
+        } else {
+            None
+        }
+    }
+
     fn zone_brightness(&self, zone: Zone) -> f32 {
         match zone {
             Zone::Green => self.settings.green_brightness,
@@ -421,14 +453,29 @@ impl LaermampelApp {
 
         // Stumm soll man immer sehen, auch wenn Grün ausgeblendet ist. Stumm ist auch, wenn
         // gar nichts mehr ankommt – dann nützt die Ampel nichts und niemand hört einen.
-        let muted = self.settings.mic_muted || self.mic_silent();
-        let mute_ring = Stroke::new(2.5, Color32::from_rgb(220, 40, 40));
+        let reason = self.mute_reason();
+        let muted = reason.is_some();
+        // Den eigenen Knopf hat man selbst gedrückt, das genügt als Ring. Alles andere kommt
+        // ungefragt: Headset-Taste, Stecker, falsches Gerät. Das muss ins Auge springen,
+        // also zusätzlich durchgestrichen und blinkend.
+        let fremd = matches!(reason, Some(MuteReason::Windows) | Some(MuteReason::Aussen));
+        let blink = if fremd { 0.45 + 0.55 * (ui.input(|i| i.time) * 3.0).sin().abs() as f32 } else { 1.0 };
+        let mute_ring = Stroke::new(if fremd { 3.5 } else { 2.5 }, Color32::from_rgb(220, 40, 40).gamma_multiply(blink));
 
         match self.settings.display {
             DisplayMode::Dot => {
                 let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
                 if muted {
                     painter.circle(rect.center(), radius, Color32::from_gray(90), mute_ring);
+                    if fremd {
+                        // Schrägstrich wie auf einem Verbotsschild: auch ohne Farbe erkennbar.
+                        let d = radius * 0.62;
+                        let c = rect.center();
+                        painter.line_segment(
+                            [Pos2::new(c.x - d, c.y + d), Pos2::new(c.x + d, c.y - d)],
+                            Stroke::new(radius * 0.22, Color32::from_rgb(235, 60, 60).gamma_multiply(blink)),
+                        );
+                    }
                     return;
                 }
                 if brightness <= 0.01 {
@@ -1061,17 +1108,34 @@ impl LaermampelApp {
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)))
                 .on_hover_text(self.latency_details());
 
-            // Am Mikrofon kommt gar nichts mehr an: das merkt man sonst erst, wenn jemand fragt.
-            if self.mic_silent() {
-                ui.label(egui::RichText::new(t("⚠ Mikrofon liefert nur Stille", "⚠ Microphone delivers only silence")).small().color(RED_TEXT))
+            // Stumm von außen merkt man sonst erst, wenn jemand fragt, warum man nichts sagt.
+            match self.mute_reason() {
+                Some(MuteReason::Aussen) => {
+                    let blink = (ui.input(|i| i.time) * 3.0).sin().abs() as f32;
+                    ui.label(
+                        egui::RichText::new(t("🔇 Headset ist stumm", "🔇 Headset is muted"))
+                            .strong()
+                            .color(RED_TEXT.gamma_multiply(0.5 + 0.5 * blink)),
+                    )
                     .on_hover_text(t(
-                        "Seit ein paar Sekunden kommt nichts mehr an – nicht einmal Rauschen. Meist ist das \
-                         Headset in der Hardware stumm (Taste am Ohr), abgesteckt, oder es ist das falsche \
-                         Mikrofon ausgewählt. Punkt und Leiste zeigen das mit rotem Ring.",
-                        "Nothing has arrived for a few seconds – not even noise. Usually the headset is muted \
-                         in hardware (button on the earcup), unplugged, or the wrong microphone is selected. \
-                         The dot and bar show this with a red ring.",
+                        "Seit ein paar Sekunden kommt nichts mehr an – nicht einmal Rauschen –, und Windows \
+                         meldet das Mikrofon als offen. Dann hat die Taste am Headset selbst geschaltet. \
+                         Abgestecktes Kabel oder ein falsch gewähltes Mikrofon sehen genauso aus.",
+                        "Nothing has arrived for a few seconds – not even noise – while Windows reports the \
+                         microphone as open. Then the button on the headset itself did it. An unplugged cable \
+                         or the wrong microphone look the same.",
                     ));
+                }
+                Some(MuteReason::Windows) => {
+                    ui.label(egui::RichText::new(t("🔇 Windows hat das Mikrofon stumm", "🔇 Windows has the microphone muted")).strong().color(RED_TEXT))
+                        .on_hover_text(t(
+                            "Nicht die Lärmampel, sondern Windows: in den Sound-Einstellungen oder über eine \
+                             Taste, die den Windows-Schalter umlegt.",
+                            "Not the app but Windows: in the sound settings, or by a key that flips the Windows \
+                             switch.",
+                        ));
+                }
+                _ => {}
             }
 
             if nothing_processes {
@@ -1620,6 +1684,8 @@ impl eframe::App for LaermampelApp {
             release_ms: self.settings.gate_release_ms,
         };
         let device_id = self.settings.device_id.clone();
+        // Der eigene Mute geht über denselben Windows-Schalter; dann sagt er nichts Neues.
+        self.windows_muted = !self.settings.mic_muted && self.mute_watch.update(device_id.as_deref());
         let input = self.volume_gate.update(
             device_id.as_deref(),
             volume_gate_on,
@@ -1686,8 +1752,9 @@ impl eframe::App for LaermampelApp {
             self.open_settings();
         }
         let zone = self.shown_zone();
+        let (stumm, eigener_mute) = (self.mute_reason().is_some(), self.settings.mic_muted);
         if let Some(tray) = &mut self.tray {
-            tray.set_state(zone, self.settings.mic_muted);
+            tray.set_state(zone, stumm, eigener_mute);
         }
 
         if matches!(self.updater.status(), Status::Installed(_)) {
