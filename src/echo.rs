@@ -94,6 +94,19 @@ impl Default for Status {
     }
 }
 
+/// Woher der Ton kommt, der herausgerechnet werden soll.
+///
+/// Im Betrieb ist das die Wiedergabe (Loopback); in Tests eine erfundene Quelle, sonst
+/// ließe sich der Filter ohne echtes Audiogerät gar nicht prüfen.
+pub trait ReferenceSource: Send {
+    fn rate(&self) -> u32;
+    fn name(&self) -> &str;
+    /// Ein Block; `true`, wenn mit Stille aufgefüllt werden musste.
+    fn take_block(&mut self, out: &mut [f32]) -> bool;
+    /// Angestautes über `block * MAX_REFERENCE_BLOCKS` wegwerfen.
+    fn trim(&mut self, block: usize);
+}
+
 /// Läuft mit, was aus den Kopfhörern kommt.
 pub struct Reference {
     _stream: cpal::Stream,
@@ -102,7 +115,15 @@ pub struct Reference {
     samples: HeapCons<f32>,
 }
 
-impl Reference {
+impl ReferenceSource for Reference {
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Ein Block Wiedergabe, oder Stille, wenn gerade nichts läuft.
     ///
     /// Gibt `true` zurück, wenn aufgefüllt werden musste: dann ist die Wiedergabe gegenüber
@@ -294,7 +315,7 @@ impl Residual {
 /// Mikrofon rein, Mikrofon ohne Kopfhörer-Anteil raus.
 pub struct Echo {
     apm: AudioProcessing,
-    reference: Reference,
+    reference: Box<dyn ReferenceSource>,
     /// Block, der gerade gefüllt wird, und das Ergebnis des vorigen.
     mic_in: Vec<f32>,
     mic_out: Vec<f32>,
@@ -311,7 +332,7 @@ pub struct Echo {
 }
 
 impl Echo {
-    pub fn new(mic_rate: u32, reference: Reference, status: Arc<Status>) -> Self {
+    pub fn new(mic_rate: u32, reference: Box<dyn ReferenceSource>, status: Arc<Status>) -> Self {
         let config = Config {
             pipeline: Pipeline {
                 // Standard wären 32 kHz: dann rechnet AEC3 nur bis 16 kHz, alles darüber
@@ -336,11 +357,11 @@ impl Echo {
             ..Default::default()
         };
         let capture = StreamConfig::new(mic_rate, 1);
-        let render = StreamConfig::new(reference.rate, 1);
+        let render = StreamConfig::new(reference.rate(), 1);
         let apm = AudioProcessing::builder().config(config).capture_config(capture).render_config(render).build();
 
         let mic_frames = mic_rate as usize * BLOCK_MS / 1000;
-        let ref_frames = reference.rate as usize * BLOCK_MS / 1000;
+        let ref_frames = reference.rate() as usize * BLOCK_MS / 1000;
         Self {
             apm,
             reference,
@@ -356,7 +377,7 @@ impl Echo {
     }
 
     pub fn reference_name(&self) -> &str {
-        &self.reference.name
+        self.reference.name()
     }
 
     /// Ein Sample hinein, ein um 10 ms verzögertes, sauberes Sample heraus.
@@ -476,5 +497,108 @@ mod tests {
     fn lautes_echo_wird_erkannt() {
         let damping = settle(-15.0, -18.0, 200);
         assert!(damping > EXTRA_DB - 0.5, "nur {damping:.1} dB gedämpft");
+    }
+}
+
+#[cfg(test)]
+mod klang_tests {
+    use super::*;
+
+    /// Wiedergabe, die nichts spielt: der Normalfall, wenn das Headset auf dem Kopf sitzt.
+    struct Stille {
+        rate: u32,
+    }
+
+    impl ReferenceSource for Stille {
+        fn rate(&self) -> u32 {
+            self.rate
+        }
+        fn name(&self) -> &str {
+            "Stille"
+        }
+        fn take_block(&mut self, out: &mut [f32]) -> bool {
+            out.fill(0.0);
+            false
+        }
+        fn trim(&mut self, _block: usize) {}
+    }
+
+    const RATE: f32 = 48_000.0;
+
+    fn rms_db(s: &[f32]) -> f32 {
+        let p = s.iter().map(|&x| (x * x) as f64).sum::<f64>() / s.len() as f64;
+        10.0 * p.max(1e-12).log10() as f32
+    }
+
+    /// Zweipoliger Resonator als Formant, wie in den dsp-Tests.
+    struct Formant {
+        cos: f32,
+        r: f32,
+        y1: f32,
+        y2: f32,
+    }
+
+    impl Formant {
+        fn new(freq: f32, bw: f32) -> Self {
+            Formant { cos: (2.0 * std::f32::consts::PI * freq / RATE).cos(), r: (-std::f32::consts::PI * bw / RATE).exp(), y1: 0.0, y2: 0.0 }
+        }
+        fn run(&mut self, x: f32) -> f32 {
+            let y = x + 2.0 * self.r * self.cos * self.y1 - self.r * self.r * self.y2;
+            self.y2 = self.y1;
+            self.y1 = y;
+            y
+        }
+    }
+
+    fn vowel(n: usize) -> Vec<f32> {
+        let period = (RATE / 110.0) as usize;
+        let mut f = [Formant::new(700.0, 80.0), Formant::new(1220.0, 90.0), Formant::new(2600.0, 120.0)];
+        let mut raw: Vec<f32> = (0..n)
+            .map(|i| {
+                let pulse = if i % period == 0 { 1.0 } else { 0.0 };
+                let mut sum = 0.0;
+                for (w, fi) in [1.0, 0.5, 0.25].iter().zip(f.iter_mut()) {
+                    sum += w * fi.run(pulse);
+                }
+                sum * (0.55 + 0.45 * (2.0 * std::f32::consts::PI * 4.0 * i as f32 / RATE).sin())
+            })
+            .collect();
+        let gain = 10f32.powf((-20.0 - rms_db(&raw)) / 20.0);
+        for x in &mut raw {
+            *x *= gain;
+        }
+        raw
+    }
+
+    /// Energie in vier Bändern, grob per Filterpaar.
+    fn baender_db(samples: &[f32]) -> [f32; 4] {
+        use crate::dsp::Biquad;
+        let grenzen = [(80.0, 800.0), (800.0, 2500.0), (2500.0, 6000.0), (6000.0, 16000.0)];
+        let mut out = [0.0; 4];
+        for (i, (lo, hi)) in grenzen.iter().enumerate() {
+            let mut hp = Biquad::highpass(RATE, *lo);
+            let mut lp = Biquad::lowpass(RATE, *hi);
+            let gefiltert: Vec<f32> = samples.iter().map(|&x| lp.run(hp.run(x))).collect();
+            out[i] = rms_db(&gefiltert[gefiltert.len() / 2..]);
+        }
+        out
+    }
+
+    /// Sitzt das Headset auf dem Kopf, spielt nichts ins Mikrofon zurück – dann darf die
+    /// Echounterdrückung die Stimme auch nicht anfassen.
+    /// Ohne Echo darf die Echounterdrückung die Stimme weder dämpfen noch verfärben.
+    #[test]
+    fn echo_ohne_echo_ist_durchsichtig() {
+        let status = Arc::new(Status::default());
+        let mut echo = Echo::new(48_000, Box::new(Stille { rate: 48_000 }), status);
+        let input = vowel(48_000 * 3);
+        let out: Vec<f32> = input.iter().map(|&x| echo.process(x)).collect();
+        let (vorher, nachher) = (baender_db(&input), baender_db(&out));
+        for i in 0..4 {
+            let verlust = vorher[i] - nachher[i];
+            assert!(verlust < 2.0, "Band {i} verliert {verlust:.1} dB, obwohl gar kein Echo da ist");
+        }
+        let gesamt = rms_db(&input[input.len() / 2..]) - rms_db(&out[out.len() / 2..]);
+        assert!(gesamt < 2.0, "Stimme insgesamt {gesamt:.1} dB leiser");
     }
 }

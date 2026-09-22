@@ -80,6 +80,12 @@ Einrichten:
 
 Die Lärmampel muss dafür laufen, sonst kommt bei „CABLE Output“ nichts an.
 
+**Klingt es dumpf?** Dann steht der Ausgang in Windows meist auf einer niedrigeren Abtastrate als das
+Mikrofon – alles oberhalb der halben Ausgangsrate fällt dabei weg. Die Lärmampel zeigt beide Raten unter
+⚙ → „Kanalzug: Ausgang und Feineinstellungen“ und warnt im Kanalzug, wenn sie nicht zusammenpassen.
+Umstellen in Windows: Einstellungen → System → Sound → „CABLE Input“ → Eigenschaften → Format auf 48000 Hz.
+Stimmen beide Raten überein, wird gar nichts umgerechnet.
+
 Unter dem Kanalzug steht neben dem Pegel die **Verzögerung in ms** (nur mit Ausgang). Beim Überfahren
 steht, woraus sie besteht: Mikrofon-Block + Puffer + Ausgabe-Block + Rauschfilter (20 ms). Den Puffer
 stellst du unter ⚙ → Feineinstellungen ein (5–60 ms): kleiner heißt weniger Verzögerung, aber mehr

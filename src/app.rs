@@ -1108,6 +1108,22 @@ impl LaermampelApp {
             ui.label(egui::RichText::new(reading).small().color(Color32::from_rgb(170, 176, 186)))
                 .on_hover_text(self.latency_details());
 
+            if let Some((_, out)) = self.rate_mismatch() {
+                let text = format!("⚠ {} {:.1} kHz", t("Ausgang läuft mit", "Output runs at"), out as f32 / 1000.0);
+                if ui
+                    .add(egui::Label::new(egui::RichText::new(text).small().color(RED_TEXT)).sense(egui::Sense::click()))
+                    .on_hover_text(t(
+                        "Weniger als das Mikrofon: Windows schneidet dabei die hohen Frequenzen ab, und genau \
+                         das hört sich dumpf an. Klick öffnet die Einstellungen, dort steht, wie man es umstellt.",
+                        "Less than the microphone: Windows cuts the high frequencies, and that is what sounds \
+                         muffled. Click opens the settings, which explain how to change it.",
+                    ))
+                    .clicked()
+                {
+                    self.general_window_open = true;
+                }
+            }
+
             // Stumm von außen merkt man sonst erst, wenn jemand fragt, warum man nichts sagt.
             match self.mute_reason() {
                 Some(MuteReason::Aussen) => {
@@ -1474,8 +1490,47 @@ impl LaermampelApp {
         Some(10.0 * power.max(1e-12).log10())
     }
 
+    /// Läuft der Ausgang mit weniger als das Mikrofon, schneidet Windows oben Frequenzen ab –
+    /// genau das hört man als „dumpf“. `None`, solange nichts läuft.
+    fn rate_mismatch(&self) -> Option<(u32, u32)> {
+        let mic = self.meter.as_ref()?.input_rate;
+        let out = self.chain_control.output_rate();
+        (out > 0 && out < mic).then_some((mic, out))
+    }
+
     fn channel_details_ui(&mut self, ui: &mut egui::Ui) {
         self.output_picker_ui(ui);
+        // Die beiden Abtastraten: stimmen sie überein, wird gar nichts umgerechnet.
+        if let Some(meter) = &self.meter {
+            let out = self.chain_control.output_rate();
+            if out > 0 {
+                let khz = |r: u32| format!("{:.1} kHz", r as f32 / 1000.0);
+                ui.label(format!("{} {} → {} {}", t("Mikrofon", "Microphone"), khz(meter.input_rate), t("Ausgang", "output"), khz(out)));
+            }
+        }
+        if let Some((mic, out)) = self.rate_mismatch() {
+            ui.colored_label(
+                RED_TEXT,
+                format!(
+                    "⚠ {} {:.1} kHz {} {:.1} kHz {}",
+                    t("Der Ausgang läuft mit nur", "The output runs at only"),
+                    out as f32 / 1000.0,
+                    t("statt", "instead of"),
+                    mic as f32 / 1000.0,
+                    t("– dadurch klingst du dumpf.", "– that is what makes you sound muffled."),
+                ),
+            );
+            ui.label(
+                egui::RichText::new(t(
+                    "In Windows: Einstellungen → System → Sound → „CABLE Input“ → Eigenschaften → Format \
+                     auf 48000 Hz stellen. Dann wird gar nichts mehr umgerechnet.",
+                    "In Windows: Settings → System → Sound → “CABLE Input” → Properties → set the format to \
+                     48000 Hz. Then nothing is resampled at all.",
+                ))
+                .small()
+                .weak(),
+            );
+        }
         let output_name = self.meter.as_ref().and_then(|m| m.agc_output_name.clone());
         let output_error = self.meter.as_ref().and_then(|m| m.agc_error.clone());
         if output_error.as_deref() == Some(agc::vb_cable_missing()) {
