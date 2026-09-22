@@ -95,6 +95,12 @@ impl ChainControl {
         self.output_rate.store(rate, Ordering::Relaxed);
     }
 
+    /// Mit welcher Abtastrate das Ausgabegerät läuft (0 = noch nichts bekannt).
+    /// Steht die in Windows niedriger als das Mikrofon, fehlen oben Frequenzen – es klingt dumpf.
+    pub fn output_rate(&self) -> u32 {
+        self.output_rate.load(Ordering::Relaxed)
+    }
+
     pub fn latency(&self) -> Latency {
         let ms = |frames: &AtomicU32, rate: &AtomicU32| {
             let rate = rate.load(Ordering::Relaxed);
@@ -340,6 +346,40 @@ impl Resampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gleiche Abtastrate heißt: gar nicht umrechnen. Sonst klingt es ohne Grund dumpfer,
+    /// obwohl nichts umzurechnen wäre.
+    #[test]
+    fn gleiche_rate_geht_unveraendert_durch() {
+        use ringbuf::traits::{Producer, Split};
+
+        let mut seed = 0x1234_5678u32;
+        let input: Vec<f32> = (0..48_000)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.5
+            })
+            .collect();
+
+        let (mut producer, mut consumer) = ringbuf::HeapRb::<f32>::new(96_000).split();
+        let mut state = OutputState::new(48_000, 48_000, DEFAULT_BUFFER_MS);
+        let mut out = Vec::new();
+        let mut block = vec![0.0f32; 480];
+        let mut gelesen = 0;
+        while gelesen < input.len() {
+            let ende = (gelesen + 480).min(input.len());
+            for &x in &input[gelesen..ende] {
+                let _ = producer.try_push(x);
+            }
+            gelesen = ende;
+            state.fill(&mut consumer, &mut block);
+            out.extend_from_slice(&block);
+        }
+        let rms = |s: &[f32]| (s.iter().map(|&x| (x * x) as f64).sum::<f64>() / s.len() as f64).sqrt();
+        // Nur die zweite Hälfte: am Anfang füllt sich der Puffer erst.
+        let verlust = 20.0 * (rms(&out[out.len() / 2..]) / rms(&input[input.len() / 2..])).log10();
+        assert!(verlust.abs() < 0.2, "gleiche Rate kostet {verlust:.2} dB");
+    }
 
     #[test]
     fn puffer_bleibt_stabil_bei_gangunterschied() {

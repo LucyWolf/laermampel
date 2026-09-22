@@ -794,6 +794,43 @@ mod tests {
         assert!(weg(0.0, 60.0, 0.85) > 50.0, "„Stark“ lässt Nicht-Stimme stehen");
     }
 
+    /// Energie in vier Bändern, grob per Filterpaar. Reicht, um „dumpf“ zu messen.
+    fn baender_db(samples: &[f32]) -> [f32; 4] {
+        let grenzen = [(80.0, 800.0), (800.0, 2500.0), (2500.0, 6000.0), (6000.0, 16000.0)];
+        let mut out = [0.0; 4];
+        for (i, (lo, hi)) in grenzen.iter().enumerate() {
+            let mut hp = Biquad::highpass(RATE, *lo);
+            let mut lp = Biquad::lowpass(RATE, *hi);
+            let gefiltert: Vec<f32> = samples.iter().map(|&x| lp.run(hp.run(x))).collect();
+            out[i] = rms_db(&gefiltert[gefiltert.len() / 2..]);
+        }
+        out
+    }
+
+    /// Der Rauschfilter darf die Stimme nicht dumpf machen: kein Band darf deutlich mehr
+    /// verlieren als die anderen.
+    #[test]
+    fn rauschfilter_macht_nicht_dumpf() {
+        let namen = ["80–800", "800–2,5k", "2,5k–6k", "6k–16k"];
+        let input = vowel(RATE as usize * 3, -20.0);
+        let vorher = baender_db(&input);
+        for (stufe, dry, duck, vad) in [("Leicht", 0.32, 0.0, 0.6), ("Medium", 0.0, 40.0, 0.6), ("Stark", 0.0, 60.0, 0.85)] {
+            let mut chain = Chain::new(RATE);
+            let mut s = Settings::default();
+            s.denoise = true;
+            s.denoise_dry = dry;
+            s.denoise_duck_db = duck;
+            s.denoise_speech_vad = vad;
+            chain.set(s);
+            let out = run(&mut chain, &input);
+            let nachher = baender_db(&out);
+            let _ = namen;
+            let tiefen = nachher[0] - vorher[0];
+            let hoehen = nachher[3] - vorher[3];
+            assert!(tiefen - hoehen < 3.0, "„{stufe}“ nimmt oben {:.1} dB mehr weg als unten", tiefen - hoehen);
+        }
+    }
+
     #[test]
     fn gate_aus_laesst_alles_durch() {
         let input = vowel(RATE as usize, -20.0);

@@ -237,7 +237,7 @@ impl Meter {
         if echo_cancel {
             match echo::start_reference(None, Arc::clone(&fault)) {
                 Ok(reference) => {
-                    let unit = Echo::new(input_rate, reference, Arc::clone(&echo_status));
+                    let unit = Echo::new(input_rate, Box::new(reference), Arc::clone(&echo_status));
                     echo_reference = Some(unit.reference_name().to_string());
                     echo = Some(unit);
                 }
