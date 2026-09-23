@@ -8,6 +8,12 @@ const COMP_LEVEL_WINDOW_MS: f32 = 50.0;
 const TAIL_DB: f32 = 10.0;
 const PEAK_DECAY_DB_PER_SECOND: f32 = 10.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
+/// Grenzen des Low-Cut. Ganz links ist er aus; 100 Hz ist der übliche Wert für Sprache:
+/// darunter sitzt beim Sprechen nur Trittschall, Griffgeräusch und der Bass, den ein
+/// Mikrofon dicht am Mund dazuerfindet (Nahbesprechungseffekt).
+pub const LOW_CUT_OFF_HZ: f32 = 20.0;
+pub const LOW_CUT_MAX_HZ: f32 = 300.0;
+
 /// Grenzen des Gain-Faders. Nach oben viel Luft, weil manche Headset-Mikrofone von Haus aus
 /// sehr leise sind; ab etwa +12 dB hebt man allerdings auch das Rauschen kräftig mit an.
 pub const FADER_MIN_DB: f32 = -60.0;
@@ -139,6 +145,8 @@ pub struct Settings {
     /// 10 dB leiser). Damit gibt es Stufen: etwas Restrauschen klingt natürlicher als ein
     /// Filter, der in Sprechpausen alles totmacht.
     pub denoise_dry: f32,
+    /// Trittschall- und Nähebass-Filter in Hz; `LOW_CUT_OFF_HZ` oder darunter heißt aus.
+    pub low_cut_hz: f32,
     pub gate: GateSettings,
     pub comp: CompSettings,
     pub fader_db: f32,
@@ -155,6 +163,7 @@ impl Default for Settings {
             denoise_speech_vad: 0.6,
             denoise_duck_db: 0.0,
             denoise_dry: 0.0,
+            low_cut_hz: LOW_CUT_OFF_HZ,
             gate: GateSettings { enabled: false, threshold_db: -45.0, range_db: 40.0, attack_ms: 2.0, hold_ms: 250.0, release_ms: 150.0 },
             comp: CompSettings {
                 enabled: false,
@@ -407,6 +416,9 @@ pub struct Chain {
     comp: Comp,
     limiter: Limiter,
     ceiling: f32,
+    /// Low-Cut, ein Filter je Kanal (der Zustand darf nicht geteilt werden).
+    low_cut: Vec<Biquad>,
+    low_cut_hz: f32,
 
     fader_k: f32,
     fader_gain: f32,
@@ -419,6 +431,7 @@ pub struct Chain {
     meter_k: f32,
     meter_hp: Biquad,
     meter_lp: Biquad,
+    sample_rate: f32,
     out_power: f32,
 }
 
@@ -432,6 +445,8 @@ impl Chain {
             comp: Comp::new(sample_rate),
             limiter: Limiter::new(sample_rate),
             ceiling: 1.0,
+            low_cut: Vec::new(),
+            low_cut_hz: LOW_CUT_OFF_HZ,
             fader_k: smoothing(FADER_SMOOTHING_MS, sample_rate),
             fader_gain: 1.0,
             duck_db: 0.0,
@@ -441,6 +456,7 @@ impl Chain {
             meter_hp: Biquad::highpass(sample_rate, METER_HIGHPASS_HZ),
             meter_lp: Biquad::lowpass(sample_rate, METER_LOWPASS_HZ.min(sample_rate * 0.45)),
             out_power: 0.0,
+            sample_rate,
         };
         chain.set(Settings::default());
         chain
@@ -460,6 +476,12 @@ impl Chain {
         self.gate.configure(&settings.gate);
         self.comp.configure(&settings.comp);
         self.ceiling = db_to_gain(settings.ceiling_db.min(0.0));
+        // Filter nur neu bauen, wenn sich die Frequenz wirklich ändert: sonst springt der
+        // Zustand jedes Mal auf null und es knackt.
+        if settings.low_cut_hz != self.low_cut_hz {
+            self.low_cut_hz = settings.low_cut_hz;
+            self.low_cut.clear();
+        }
         self.settings = settings;
     }
 
@@ -468,6 +490,17 @@ impl Chain {
         if frame.is_empty() {
             return;
         }
+        // Low-Cut zuerst: Trittschall und Nähebass sollen weder das Gate aufziehen noch von
+        // der Verstärkung mit hochgehoben werden. Jeder Kanal braucht seinen eigenen Zustand.
+        if self.low_cut_hz > LOW_CUT_OFF_HZ {
+            if self.low_cut.len() != frame.len() {
+                self.low_cut = (0..frame.len()).map(|_| Biquad::highpass(self.sample_rate, self.low_cut_hz)).collect();
+            }
+            for (sample, filter) in frame.iter_mut().zip(self.low_cut.iter_mut()) {
+                *sample = filter.run(*sample);
+            }
+        }
+
         // Gemessen wird am Mittel aller Kanäle, alle Kanäle bekommen dieselbe Verstärkung.
         let mut mono = frame.iter().sum::<f32>() / frame.len() as f32;
 
@@ -1055,5 +1088,58 @@ mod fader_tests {
             let gemessen = rms_db(&out[out.len() / 2..]) - rms_db(&input[input.len() / 2..]);
             assert!((gemessen - fader).abs() < 0.5, "Fader {fader:+.0} dB bringt nur {gemessen:+.1} dB");
         }
+    }
+}
+
+#[cfg(test)]
+mod low_cut_tests {
+    use super::*;
+
+    fn rms_db(s: &[f32]) -> f32 {
+        let p = s.iter().map(|&x| (x * x) as f64).sum::<f64>() / s.len() as f64;
+        10.0 * p.max(1e-12).log10() as f32
+    }
+
+    fn durch_die_kette(freq: f32, low_cut_hz: f32) -> f32 {
+        let rate = 48_000.0;
+        let mut chain = Chain::new(rate);
+        let mut s = Settings::default();
+        s.low_cut_hz = low_cut_hz;
+        chain.set(s);
+        let input: Vec<f32> = (0..48_000 * 2)
+            .map(|i| 0.1 * (2.0 * std::f32::consts::PI * freq * i as f32 / rate).sin())
+            .collect();
+        let out: Vec<f32> = input
+            .iter()
+            .map(|&x| {
+                let mut frame = [x];
+                chain.process_frame(&mut frame);
+                frame[0]
+            })
+            .collect();
+        rms_db(&out[out.len() / 2..]) - rms_db(&input[input.len() / 2..])
+    }
+
+    /// Bei 100 Hz Low-Cut muss tiefer Bass deutlich leiser werden – darum geht es.
+    #[test]
+    fn low_cut_nimmt_den_bass_heraus() {
+        let bass = durch_die_kette(50.0, 100.0);
+        assert!(bass < -9.0, "50 Hz nur um {bass:.1} dB gesenkt");
+    }
+
+    /// Die Stimme selbst darf er nicht anfassen: ab etwa 300 Hz sitzt die Grundfrequenz.
+    #[test]
+    fn low_cut_laesst_die_stimme_stehen() {
+        for freq in [300.0, 1000.0, 4000.0] {
+            let verlust = durch_die_kette(freq, 100.0);
+            assert!(verlust > -1.0, "{freq:.0} Hz verliert {verlust:.1} dB");
+        }
+    }
+
+    /// Ganz links ist er aus und ändert gar nichts.
+    #[test]
+    fn low_cut_aus_aendert_nichts() {
+        let verlust = durch_die_kette(50.0, LOW_CUT_OFF_HZ);
+        assert!(verlust.abs() < 0.1, "aus, aber {verlust:.2} dB Unterschied");
     }
 }

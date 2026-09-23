@@ -23,6 +23,12 @@ pub fn knob_db(ui: &mut Ui, value: &mut f32, min_db: f32, max_db: f32, label: &s
     knob_range(ui, value, min_db, max_db, 1.0, text, label, lit)
 }
 
+/// Drehknopf in Hz; ganz links heißt „aus“. Doppelklick: aus.
+pub fn knob_hz(ui: &mut Ui, value: &mut f32, min_hz: f32, max_hz: f32, label: &str, lit: bool) -> Response {
+    let text = if *value <= min_hz + 0.5 { t("aus", "off").to_string() } else { format!("{:.0} Hz", *value) };
+    knob_range(ui, value, min_hz, max_hz, 5.0, text, label, lit)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn knob_range(ui: &mut Ui, value: &mut f32, min: f32, max: f32, step: f32, text: String, label: &str, lit: bool) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(64.0, 92.0), Sense::click_and_drag());
