@@ -9,7 +9,7 @@ use crate::apo_setup;
 use crate::audio::{self, InputDevice, Meter, VoiceSetup};
 use crate::autostart;
 use crate::beep;
-use crate::dsp::{CompSettings, GateSettings, Settings as ChainSettings};
+use crate::dsp::{self, CompSettings, GateSettings, Settings as ChainSettings};
 #[cfg(windows)]
 use crate::headset;
 use crate::instance;
@@ -926,7 +926,27 @@ impl LaermampelApp {
                 if let Some(err) = &other_error {
                     ui.label(egui::RichText::new(err).small().color(RED_TEXT));
                 }
-
+                // Ein Mikrofon unter 48 kHz kann oben herum gar nichts liefern – das hört man
+                // als „dumpf“, und keine Einstellung in der Lärmampel holt es zurück.
+                if let Some(rate) = self.meter.as_ref().map(|m| m.input_rate) {
+                    let khz = format!("{:.0} kHz", rate as f32 / 1000.0);
+                    if rate < 48_000 {
+                        ui.label(egui::RichText::new(format!("⚠ {khz}")).small().color(RED_TEXT)).on_hover_text(t(
+                            "Dein Mikrofon liefert nur bis zur halben Abtastrate, alles darüber fehlt – das \
+                             klingt dumpf, und die Lärmampel kann es nicht zurückholen. Umstellen in Windows: \
+                             Einstellungen → System → Sound → dein Mikrofon → Format auf 48000 Hz. Bietet das \
+                             Gerät nichts Höheres an, ist es die Grenze des Headsets. Der Rauschfilter braucht \
+                             ebenfalls 48 kHz.",
+                            "Your microphone only delivers up to half its sample rate, everything above is \
+                             missing – that sounds muffled and the app cannot bring it back. Change it in \
+                             Windows: Settings → System → Sound → your microphone → set the format to 48000 Hz. \
+                             If the device offers nothing higher, that is the headset's limit. The noise filter \
+                             needs 48 kHz too.",
+                        ));
+                    } else {
+                        ui.label(egui::RichText::new(khz).small().weak());
+                    }
+                }
             });
             ui.add_space(6.0);
 
@@ -995,7 +1015,21 @@ impl LaermampelApp {
                 // Ohne Ausgang stellt der Fader den Windows-Mikrofonpegel – und der hat einen
                 // festen Bereich. Steht er schon oben, passiert beim Aufdrehen gar nichts;
                 // das muss hier stehen, sonst sieht es nach einem kaputten Fader aus.
-                let fader_hover = if running {
+                let laut = s.fader_db > 12.0;
+                let fader_hover = if running && laut {
+                    format!(
+                        "{}\n{}",
+                        t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB"),
+                        t(
+                            "Kräftig aufgedreht: das hebt Rauschen und Tastatur genauso mit an wie die Stimme. \
+                             Leiser wird es nicht besser, aber sauberer wäre, den Mikrofonpegel in Windows \
+                             hochzusetzen. Gegen Übersteuern hilft der Limiter in der Pegelanzeige.",
+                            "Turned up hard: this lifts noise and keyboard just as much as your voice. Cleaner \
+                             would be to raise the microphone level in Windows. Against clipping, use the \
+                             limiter in the meter.",
+                        )
+                    )
+                } else if running {
                     t("Gain · Doppelklick: 0 dB", "Gain · double-click: 0 dB").to_string()
                 } else if !windows_slider {
                     format!(
@@ -1026,7 +1060,7 @@ impl LaermampelApp {
                         t("Stellt gerade den Mikrofonpegel von Windows, gilt für alle Programme.", "Currently moves the Windows microphone level, which applies to every program."),
                     )
                 };
-                strip::fader(ui, &mut s.fader_db, -60.0, 12.0, 230.0).on_hover_text(fader_hover);
+                strip::fader(ui, &mut s.fader_db, dsp::FADER_MIN_DB, dsp::FADER_MAX_DB, 230.0).on_hover_text(fader_hover);
                 ui.vertical(|ui| {
                     let mut display_open = self.display_window_open;
                     strip::toggle_button(ui, &mut display_open, t("Anzeige", "Display"), Color32::from_rgb(70, 110, 170))
