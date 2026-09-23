@@ -126,7 +126,8 @@ Unter Linux wird zusätzlich `libasound2-dev` (bzw. `alsa-lib`) benötigt.
 scripts/release.sh
 ```
 
-Das Skript zählt die letzte Stelle der Version hoch, committet, setzt den Tag und pusht.
+Das Skript räumt zuerst alte Releases weg (es bleiben immer die letzten zwei; die Tags bleiben alle
+erhalten), zählt dann die letzte Stelle der Version hoch, committet, setzt den Tag und pusht.
 GitHub Actions baut dann Installer und `laermampel.exe` und legt das Release an.
 
 Versionsschema: nur die letzte Stelle wird erhöht (`0.3.1`, `0.3.2` …).
