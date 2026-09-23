@@ -40,11 +40,6 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - **Mikrofon wählen:** auf den Gerätenamen unter „MIKROFON“ klicken. Ist keins ausgewählt oder das gewählte abgesteckt, blinkt dort ein roter Hinweis.
 - **Empfindlichkeit:** Regler unter dem Gerätenamen, in Prozent. Das ist der Mikrofonpegel von Windows; das Gate senkt von diesem Wert aus ab.
 - **Ausgang wählen:** Zahnrad oben rechts → „Kanalzug: Ausgang und Feineinstellungen“ → „Ausgang“: Aus, automatisch VB-Cable, oder ein virtuelles Gerät (VB-Cable, Voicemeeter). Kopfhörer und Lautsprecher stehen wegen Rückkopplung nicht zur Wahl. Das stellt man einmal ein, deshalb steht es nicht im Kanalzug.
-- **Low-Cut** (aus bis 300 Hz): schneidet alles darunter weg. Beim Sprechen sitzt da nur Rumpeln,
-  Tischklopfen und der Bass, den ein Mikrofon dicht am Mund dazuerfindet (Nahbesprechungseffekt).
-  Steht ab Werk auf 100 Hz, dem üblichen Wert für Sprache; klingst du weiterhin zu bassig, weiter
-  aufdrehen. Ganz links bzw. Doppelklick ist aus. Er sitzt vor allem anderen, damit Gate und
-  Comp. gar nicht erst auf Rumpeln reagieren.
 - **Comp.** (0–10): automatische Lautstärke, hebt leise Sprache an und regelt laute runter. 0 = aus.
 - **Gate** (−100 bis 0 dB): gleitend wie bei Voicemeeter. Über der Schwelle bleibt alles unverändert, darunter wird pro dB darunter um 3 dB zusätzlich abgesenkt (höchstens um die eingestellte Absenkung). Je höher das Gate, desto niedriger der Pegel; die Anzeige zeigt den Pegel nach dem Gate. Ganz links (−100) ist aus.
   Ohne VB-Cable zieht die Lärmampel dafür den Mikrofon-Regler von Windows gleitend herunter (gilt für alle Programme). Die Lärmampel senkt dabei nur so weit ab, dass sie dich noch hört, und regelt das selbst nach; hängt das Gate trotzdem, öffnet sie nach 4 s kurz den Regler und misst neu. Beim Beenden wird der Regler zurückgestellt, nach einem Absturz beim nächsten Start.
@@ -75,6 +70,10 @@ Bearbeitet nur dein Mikrofon, nicht das, was du hörst.
 - Der **Fader** verstellt ohne Ausgang den Mikrofon-Regler von Windows. Der hat einen festen Bereich: steht er
   schon am Anschlag, kommt ein Aufdrehen nicht mehr an. Das Überfahren des Faders sagt, wie viele dB gerade
   verloren gehen – weiter hoch geht es dann nur mit VB-Cable als Ausgang.
+- **Low-Cut** (⚙ → Kanalzug → Klang, aus bis 300 Hz): schneidet alles darunter weg. Beim Sprechen sitzt da
+  nur Rumpeln, Tischklopfen und der Bass, den ein Mikrofon dicht am Mund dazuerfindet
+  (Nahbesprechungseffekt). Ab Werk 100 Hz, dem üblichen Wert für Sprache; klingst du weiterhin zu bassig,
+  weiter aufdrehen. Er sitzt vor allem anderen, damit Gate und Comp. gar nicht erst auf Rumpeln reagieren.
 - Knöpfe und Fader: ziehen oder Mausrad, Doppelklick setzt zurück. Das Mausrad wirkt nur, wenn das Fenster
   auch vorn ist – sonst würde Windows („Inaktive Fenster beim Daraufzeigen scrollen“) beim Scrollen in einem
   anderen Programm dein Mikrofon verstellen. Feineinstellungen und Ausgabe unter dem Zahnrad oben rechts.
