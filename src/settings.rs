@@ -122,6 +122,8 @@ pub struct Settings {
     pub gate_threshold_db: f32,
     pub comp_knob: f32,
     pub fader_db: f32,
+    /// Low-Cut im Kanalzug in Hz (20 = aus). Nimmt Trittschall und Nähebass heraus.
+    pub low_cut_hz: f32,
     pub mic_muted: bool,
     /// Wie viel leiser im geschlossenen Zustand, 80 = praktisch stumm.
     pub gate_range_db: f32,
@@ -176,6 +178,8 @@ impl Default for Settings {
             gate_threshold_db: GATE_OFF_DB,
             comp_knob: 0.0,
             fader_db: 0.0,
+            // Für Sprache ist ein Low-Cut Standard: darunter sitzt nur Rumpeln.
+            low_cut_hz: 100.0,
             mic_muted: false,
             gate_range_db: 25.0,
             gate_attack_ms: 2.0,
@@ -230,6 +234,7 @@ impl Settings {
             gate_threshold_db,
             comp_knob,
             fader_db,
+            low_cut_hz,
             gate_range_db,
             gate_attack_ms,
             gate_hold_ms,

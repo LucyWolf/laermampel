@@ -323,6 +323,7 @@ impl LaermampelApp {
                 pause_db: s.agc_gate_db,
             },
             fader_db: s.fader_db,
+            low_cut_hz: s.low_cut_hz,
             muted: s.mic_muted,
             ceiling_db: s.agc_ceiling_db,
         }
@@ -1002,6 +1003,30 @@ impl LaermampelApp {
                     t("Noise Gate: aus (ganz links)", "Noise gate: off (fully left)").to_string()
                 };
                 strip::knob_db(ui, &mut s.gate_threshold_db, settings::GATE_OFF_DB, 0.0, "Gate", gate_open).on_hover_text(gate_hover);
+            });
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                let low_cut_an = s.low_cut_hz > dsp::LOW_CUT_OFF_HZ;
+                strip::knob_hz(ui, &mut s.low_cut_hz, dsp::LOW_CUT_OFF_HZ, dsp::LOW_CUT_MAX_HZ, t("Low-Cut", "Low cut"), low_cut_an)
+                    .on_hover_text(if low_cut_an {
+                        format!(
+                            "{} {:.0} Hz. {}",
+                            t("Schneidet alles unter", "Cuts everything below"),
+                            s.low_cut_hz,
+                            t(
+                                "Da sitzt beim Sprechen nur Rumpeln, Tischklopfen und der Bass, den ein Mikrofon \
+                                 dicht am Mund dazuerfindet. 100 Hz ist der übliche Wert; klingst du noch immer \
+                                 zu bassig, weiter aufdrehen. Doppelklick schaltet aus.",
+                                "That is where rumble, desk knocks and the bass a close microphone invents live. \
+                                 100 Hz is the usual value; if you still sound too bassy, turn it up further. \
+                                 Double-click turns it off.",
+                            )
+                        )
+                    } else {
+                        t("Low-Cut: aus. Nach rechts drehen nimmt den Bass heraus.", "Low cut: off. Turn right to remove the bass.").to_string()
+                    });
             });
             ui.add_space(6.0);
 
