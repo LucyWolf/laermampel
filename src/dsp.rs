@@ -8,6 +8,11 @@ const COMP_LEVEL_WINDOW_MS: f32 = 50.0;
 const TAIL_DB: f32 = 10.0;
 const PEAK_DECAY_DB_PER_SECOND: f32 = 10.0;
 const LIMITER_RELEASE_MS: f32 = 100.0;
+/// Grenzen des Gain-Faders. Nach oben viel Luft, weil manche Headset-Mikrofone von Haus aus
+/// sehr leise sind; ab etwa +12 dB hebt man allerdings auch das Rauschen kräftig mit an.
+pub const FADER_MIN_DB: f32 = -60.0;
+pub const FADER_MAX_DB: f32 = 30.0;
+
 /// Fader und Mute weich überblenden, sonst knackt es.
 const FADER_SMOOTHING_MS: f32 = 10.0;
 /// Darunter ist es sicher keine Stimme und die volle Absenkung greift.
@@ -489,7 +494,7 @@ impl Chain {
         if self.settings.comp.enabled {
             gain *= self.comp.gain(mono * gain);
         }
-        let fader_target = if self.settings.muted { 0.0 } else { db_to_gain(self.settings.fader_db.clamp(-60.0, 24.0)) };
+        let fader_target = if self.settings.muted { 0.0 } else { db_to_gain(self.settings.fader_db.clamp(FADER_MIN_DB, FADER_MAX_DB)) };
         self.fader_gain += (fader_target - self.fader_gain) * self.fader_k;
         gain *= self.fader_gain;
 
@@ -1013,5 +1018,42 @@ mod tests {
         let reduction_left = tail_rms(&quiet) - tail_rms(&left);
         let reduction_right = tail_rms(&quiet) - 6.02 - tail_rms(&right);
         assert!((reduction_left - reduction_right).abs() < 0.1, "links {reduction_left:.1}, rechts {reduction_right:.1}");
+    }
+}
+
+#[cfg(test)]
+mod fader_tests {
+    use super::*;
+
+    /// Der Fader muss bis ans obere Ende wirken – sonst steht im Regler eine Zahl, die
+    /// hinten gar nicht ankommt (die Kette war früher bei +24 dB abgeschnitten).
+    #[test]
+    fn fader_wirkt_bis_zum_anschlag() {
+        for fader in [12.0, 20.0, FADER_MAX_DB] {
+            let mut chain = Chain::new(48_000.0);
+            let mut s = Settings::default();
+            s.fader_db = fader;
+            // Ohne Limiter, sonst begrenzt der die Spitzen und der Test misst ihn mit.
+            s.ceiling_db = 0.0;
+            chain.set(s);
+            let amplitude = db_to_gain(-60.0) * std::f32::consts::SQRT_2;
+            let input: Vec<f32> = (0..48_000 * 2)
+                .map(|i| amplitude * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 48_000.0).sin())
+                .collect();
+            let out: Vec<f32> = input
+                .iter()
+                .map(|&x| {
+                    let mut frame = [x];
+                    chain.process_frame(&mut frame);
+                    frame[0]
+                })
+                .collect();
+            let rms_db = |s: &[f32]| {
+                let p = s.iter().map(|&x| (x * x) as f64).sum::<f64>() / s.len() as f64;
+                10.0 * p.max(1e-12).log10() as f32
+            };
+            let gemessen = rms_db(&out[out.len() / 2..]) - rms_db(&input[input.len() / 2..]);
+            assert!((gemessen - fader).abs() < 0.5, "Fader {fader:+.0} dB bringt nur {gemessen:+.1} dB");
+        }
     }
 }
