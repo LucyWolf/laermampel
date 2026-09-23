@@ -10,6 +10,16 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# Alte Releases wegräumen, bevor das neue dazukommt: es sollen immer nur zwei stehen
+# (Installer sind groß). Die Git-Tags bleiben, daraus lässt sich jede Version neu bauen.
+# Hier wird auf eins heruntergeräumt, weil gleich eines dazukommt.
+if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+  gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[1:] | .[].tagName' \
+    | while read -r alt; do
+        gh release delete "$alt" --yes >/dev/null 2>&1 && echo "altes Release $alt gelöscht"
+      done
+fi
+
 current=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 IFS=. read -r major minor patch <<<"$current"
 if (( patch >= 99 )); then
